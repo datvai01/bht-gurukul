@@ -20,6 +20,8 @@ import { membershipExpiryLabel, membershipStatus, templeYear } from "@/lib/membe
 type Member = {
   id: number;
   memberCode: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   name: string | null;
   email: string | null;
   phone: string | null;
@@ -75,7 +77,8 @@ type MemberDetail = Member & {
 
 
 type FormData = {
-  name: string;
+  firstName: string;
+  lastName: string;
   email: string;
   phone: string;
   membershipYear: string;
@@ -91,7 +94,7 @@ type ValidateFormData = {
 
 type SortKey = "id" | "name" | "email" | "createdAt" | "validation";
 
-const EMPTY_FORM: FormData = { name: "", email: "", phone: "", membershipYear: "", address: "" };
+const EMPTY_FORM: FormData = { firstName: "", lastName: "", email: "", phone: "", membershipYear: "", address: "" };
 const EMPTY_VALIDATE: ValidateFormData = {
   idCardTypeSeen: "",
   idCardNumberLast4: "",
@@ -462,7 +465,9 @@ function MemberModal({ editing, onClose, onSaved }: {
   const [form, setForm] = useState<FormData>(
     editing
       ? {
-          name:           editing.name ?? "",
+          // Older records without split names fall back to splitting the full name at its first space.
+          firstName:      editing.firstName ?? (editing.name ?? "").trim().split(/\s+/)[0] ?? "",
+          lastName:       editing.lastName ?? (editing.name ?? "").trim().split(/\s+/).slice(1).join(" "),
           email:          editing.email ?? "",
           phone:          editing.phone ? formatUSPhone(editing.phone.replace(/\D/g, "")) : "",
           membershipYear: editing.membershipYear?.toString() ?? "",
@@ -485,7 +490,8 @@ function MemberModal({ editing, onClose, onSaved }: {
 
   function validate(): boolean {
     const e: Record<string, string> = {};
-    if (!form.name.trim()) e.name = "Name is required";
+    if (!form.firstName.trim()) e.firstName = "First name is required";
+    if (!form.lastName.trim()) e.lastName = "Last name is required";
     if (!form.email.trim()) {
       e.email = "Email is required";
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
@@ -513,7 +519,8 @@ function MemberModal({ editing, onClose, onSaved }: {
     setSaving(true);
     try {
       const payload = {
-        name:             form.name.trim(),
+        firstName:        form.firstName.trim(),
+        lastName:         form.lastName.trim(),
         email:            form.email.trim(),
         phone:            form.phone.replace(/\D/g, ""),
         isExistingMember: true,
@@ -546,10 +553,17 @@ function MemberModal({ editing, onClose, onSaved }: {
           </button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-secondary mb-1">Full Name <span className="text-red-500">*</span></label>
-            <Input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder="e.g. Anita Sharma" />
-            {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name}</p>}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-secondary mb-1">First Name <span className="text-red-500">*</span></label>
+              <Input value={form.firstName} onChange={(e) => field("firstName", e.target.value)} placeholder="e.g. Anita" />
+              {errors.firstName && <p className="text-xs text-red-500 mt-1">{errors.firstName}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-secondary mb-1">Last Name <span className="text-red-500">*</span></label>
+              <Input value={form.lastName} onChange={(e) => field("lastName", e.target.value)} placeholder="e.g. Sharma" />
+              {errors.lastName && <p className="text-xs text-red-500 mt-1">{errors.lastName}</p>}
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-secondary mb-1">Email <span className="text-red-500">*</span></label>
@@ -734,8 +748,8 @@ function DetailPanel({ member, onClose, onEdit, onDelete, onRenew, onValidate, o
   onDelete: () => void; onRenew: () => void; onValidate: () => void; onFeeEdit: () => void; canEdit: boolean;
 }) {
   const [showRenewModal, setShowRenewModal] = useState(false);
-  const exp          = membershipExpiryLabel(member.createdAt);
-  const { isActive: active, expiringSoon } = membershipStatus(member.createdAt);
+  const exp          = membershipExpiryLabel(member.createdAt, member.membershipYear);
+  const { isActive: active, expiringSoon } = membershipStatus(member.createdAt, undefined, member.membershipYear);
   const validated    = member.validationStatus === "Validated";
   const days         = daysSince(member.createdAt);
   const overdue      = !validated && days > 90;
@@ -1176,7 +1190,7 @@ export default function Members() {
       m.validationStatus === "Validated" ? "Verified" : isOverdue(m) ? `Not Verified (${daysSince(m.createdAt)}d overdue)` : `Not Verified (${daysSince(m.createdAt)}d)`,
       m.memFeeStatus ?? "—",
       daysSince(m.createdAt),
-      membershipExpiryLabel(m.createdAt),
+      membershipExpiryLabel(m.createdAt, m.membershipYear),
       m.studentCount,
       fmtDate(m.createdAt),
     ]);
@@ -1425,7 +1439,7 @@ export default function Members() {
                         <StatusBadge isActive={m.isActive} expiringSoon={m.expiringSoon} size="xs" />
                         {m.isActive && m.createdAt && (
                           <span className="text-[10px] text-muted-foreground leading-tight">
-                            until {membershipExpiryLabel(m.createdAt)}
+                            until {membershipExpiryLabel(m.createdAt, m.membershipYear)}
                           </span>
                         )}
                       </div>

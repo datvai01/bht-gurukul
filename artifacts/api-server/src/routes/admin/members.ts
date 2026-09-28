@@ -6,9 +6,12 @@ import { db } from "@workspace/db";
 import { membersTable, studentsTable, membershipPaymentsTable, portalSettingsTable, memberAccessChallengesTable } from "@workspace/db/schema";
 import { or, eq, ilike, asc, desc, sql, and, count } from "drizzle-orm";
 import { writeAudit } from "../../lib/audit";
+import { logger } from "../../lib/logger";
 import { isCompleteAddress } from "../../lib/address";
 import { templeYear } from "../../lib/membership";
 import { pgErrorInfo } from "../../lib/pg-error";
+import { configuredFee, extendMembershipThrough } from "../../lib/registration-balance";
+import { isValidMemberNamePart, memberNameParts } from "../../lib/member-name";
 import {
   createMemberContextToken,
   createNewMemberContextToken,
@@ -67,6 +70,11 @@ type EmailSendResult = { ok: true } | { ok: false };
 
 async function sendEmailCode(email: string, code: string): Promise<EmailSendResult> {
   const provider = process.env.MEMBER_EMAIL_PROVIDER?.trim().toLowerCase();
+  // Local development only: print the code to the API server log instead of emailing it.
+  if (provider === "console" && process.env.NODE_ENV !== "production") {
+    logger.warn({ email, code }, "DEV: member verification code (not emailed)");
+    return { ok: true };
+  }
   if (provider === "gmail") {
     const sender = normalizeMemberEmail(process.env.GMAIL_FROM_EMAIL);
     if (!sender) return { ok: false };
@@ -280,9 +288,11 @@ async function requireVerifiedAdmin(
 // Eastern time before comparing calendar years, independent of the DB session TZ.
 const currentTempleYear = sql`EXTRACT(YEAR FROM NOW() AT TIME ZONE 'America/New_York')`;
 const memberTempleYear = sql`EXTRACT(YEAR FROM (${membersTable.createdAt} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York'))`;
-const activeMembership = sql`(${membersTable.createdAt} IS NOT NULL AND ${membersTable.createdAt} <= (NOW() AT TIME ZONE 'UTC') AND ${memberTempleYear} = ${currentTempleYear})`;
+// A membership ends December 31 of its start year or of a later year already paid in advance.
+const membershipEndYear = sql`GREATEST(${memberTempleYear}, COALESCE(${membersTable.membershipYear}, 0))`;
+const activeMembership = sql`(${membersTable.createdAt} IS NOT NULL AND ${membersTable.createdAt} <= (NOW() AT TIME ZONE 'UTC') AND ${membershipEndYear} >= ${currentTempleYear})`;
 const inFinalThirtyDays = sql`(NOW() >= (((date_trunc('year', NOW() AT TIME ZONE 'America/New_York') + INTERVAL '1 year') AT TIME ZONE 'America/New_York') - INTERVAL '30 days'))`;
-const expiringMembership = sql`(${activeMembership} AND ${inFinalThirtyDays})`;
+const expiringMembership = sql`(${activeMembership} AND ${membershipEndYear} = ${currentTempleYear} AND ${inFinalThirtyDays})`;
 
 // GET /api/admin/members — list all members with search, filter, pagination
 router.get("/", async (req, res) => {
@@ -376,6 +386,8 @@ router.get("/", async (req, res) => {
     const rows = await db
       .select({
         id:                     membersTable.id,
+        firstName:              membersTable.firstName,
+        lastName:               membersTable.lastName,
         name:                   membersTable.name,
         email:                  membersTable.email,
         phone:                  membersTable.phone,
@@ -515,6 +527,7 @@ router.post("/access/verify", (_req, res) => {
 });
 
 const genericIdentityError = "We could not verify the information provided. Please check your email address and phone number, use the existing-member flow, or contact the temple office.";
+const identityExistsError = "This mobile number or email address already exists in the BHT database, so a new membership cannot be created. Please use Existing Member, provide different contact information, or contact the Temple administrator.";
 const missingExistingMemberError = "We couldn't find a membership associated with this mobile number. Please check the number and try again. If you're a new member, select New Member to continue.";
 
 function maskMemberEmail(email: string): string {
@@ -525,14 +538,14 @@ function maskMemberEmail(email: string): string {
 async function resolveExistingMember(phone: string, identifier: unknown) {
   const candidates = await db.select({
     id: membersTable.id, email: membersTable.email, name: membersTable.name,
-    memberCode: membersTable.memberCode,
+    lastName: membersTable.lastName, memberCode: membersTable.memberCode,
   }).from(membersTable)
     .where(sql`REGEXP_REPLACE(COALESCE(${membersTable.phone}, ''), '[^0-9]', '', 'g') = ${phone}`);
   if (!candidates.length) return { kind: "missing" as const };
   const entered = typeof identifier === "string" ? identifier.trim().toLowerCase() : "";
   const narrowed = candidates.length > 1 && entered
     ? candidates.filter(member =>
-      member.name?.trim().split(/\s+/).at(-1)?.toLowerCase() === entered ||
+      (member.lastName ?? member.name?.trim().split(/\s+/).at(-1))?.trim().toLowerCase() === entered ||
       member.memberCode?.trim().toLowerCase() === entered ||
       String(member.id) === entered)
     : candidates;
@@ -596,7 +609,7 @@ router.post("/email-verification/request", async (req, res) => {
         await lockIdentity(tx, phone, email);
         return hasIdentityCollision(tx, phone, email);
       });
-      if (collision) return res.status(400).json({ error: genericIdentityError });
+      if (collision) return res.status(409).json({ error: identityExistsError, code: "identity-exists" });
     }
     const hourlyBudget = await reserveOtpAggregateBudget(
       otpRateLimitKey("global-hourly", "all", sessionSecret),
@@ -827,6 +840,8 @@ router.post("/lookup", async (req, res) => {
     res.json({
       id: member.id,
       memberCode: member.memberCode,
+      firstName: member.firstName,
+      lastName: member.lastName,
       name: member.name,
       email: member.email,
       phone: member.phone,
@@ -834,6 +849,7 @@ router.post("/lookup", async (req, res) => {
       address: member.address,
       membershipYear: member.membershipYear,
       createdAt: member.createdAt,
+      validationStatus: member.validationStatus,
       memberContextToken: verifiedAdmin
         ? createMemberContextToken(member.id, sessionSecret)
         : createVerifiedMemberContextToken(member.id, sessionSecret),
@@ -853,8 +869,8 @@ router.post("/", async (req, res) => {
     if (!isSameOriginRequest(req)) {
       return res.status(403).json({ error: "A same-origin request is required." });
     }
-    const { name, email, phone, address, employer, isExistingMember, policyAgreed, membershipYear } = req.body as {
-      name?: string; email?: string; phone?: string;
+    const { firstName, lastName, name, email, phone, address, employer, isExistingMember, policyAgreed, membershipYear } = req.body as {
+      firstName?: string; lastName?: string; name?: string; email?: string; phone?: string;
       address?: string; employer?: string;
       isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number;
     };
@@ -865,6 +881,10 @@ router.post("/", async (req, res) => {
     }
     if (address != null && !isCompleteAddress(address)) {
       return res.status(400).json({ error: "A complete address with street, city, 2-letter state and ZIP is required." });
+    }
+    const nameParts = memberNameParts({ firstName, lastName, name });
+    if (!nameParts || !isValidMemberNamePart(nameParts.firstName) || !isValidMemberNamePart(nameParts.lastName)) {
+      return res.status(400).json({ error: "Enter the member's first name and last name." });
     }
     const normalizedPhone = normalizeUsPhone(phone);
     if (!normalizedPhone) {
@@ -898,7 +918,9 @@ router.post("/", async (req, res) => {
       }
       const [row] = await tx.insert(membersTable)
         .values({
-          name:             name?.trim() || null,
+          firstName:        nameParts.firstName,
+          lastName:         nameParts.lastName,
+          name:             nameParts.name,
           email:            normalizedEmail,
           phone:            normalizedPhone,
           address:          address?.trim() || null,
@@ -951,8 +973,8 @@ router.put("/:id", async (req, res) => {
       return res.status(403).json({ error: "A same-origin request is required." });
     }
 
-    const { name, email, phone, isExistingMember, policyAgreed, membershipYear, address } = req.body as {
-      name?: string; email?: string | null; phone?: string | null;
+    const { firstName, lastName, name, email, phone, isExistingMember, policyAgreed, membershipYear, address } = req.body as {
+      firstName?: string; lastName?: string; name?: string; email?: string | null; phone?: string | null;
       isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number | null;
       address?: string | null;
     };
@@ -973,7 +995,13 @@ router.put("/:id", async (req, res) => {
     }
 
     const updateData: Partial<typeof membersTable.$inferInsert> = {};
-    if (name !== undefined) updateData.name = name.trim() || null;
+    if (firstName !== undefined || lastName !== undefined || name !== undefined) {
+      const nameParts = memberNameParts({ firstName, lastName, name });
+      if (!nameParts || !isValidMemberNamePart(nameParts.firstName) || !isValidMemberNamePart(nameParts.lastName)) {
+        return res.status(400).json({ error: "Enter the member's first name and last name." });
+      }
+      Object.assign(updateData, nameParts);
+    }
     if (email !== undefined) {
       const normalizedEmail = normalizeMemberEmail(email);
       if (!isValidMemberEmail(normalizedEmail)) {
@@ -1142,8 +1170,11 @@ router.patch("/:id/renew", async (req, res) => {
       .from(portalSettingsTable)
       .where(eq(portalSettingsTable.key, "stripe_membership_fee"))
       .limit(1);
-    const configuredDue = mfRow ? parseFloat(mfRow.value ?? "150") : 150;
-    const defaultDue    = isNaN(configuredDue) ? 150 : configuredDue;
+    const configuredDue = configuredFee(mfRow?.value);
+    if (configuredDue === null && amountDue === undefined) {
+      return res.status(503).json({ error: "The annual membership fee is not configured. Please contact the administration." });
+    }
+    const defaultDue = configuredDue ?? 0;
 
     const [member] = await db
       .update(membersTable)
@@ -1181,8 +1212,10 @@ router.patch("/:id/renew", async (req, res) => {
             receiptId:     receiptId ?? null,
             paymentDate:   paymentDate ?? null,
             notes:         notes ?? null,
+            ...(paymentStatus === "Paid" ? { pendingReason: null } : {}),
           },
         });
+      if (paymentStatus === "Paid") await extendMembershipThrough(db, id, curYear);
     } else {
       // No payment details — ensure a default Pending record exists for this year
       // (ON CONFLICT DO NOTHING preserves an existing Paid record unchanged)
@@ -1293,9 +1326,12 @@ router.post("/:id/membership-payment", async (req, res) => {
           notes:              notes ?? null,
           updatedByAdminName: adminName,
           updatedAt:          new Date(),
+          ...(paymentStatus === "Paid" ? { pendingReason: null } : {}),
         },
       })
       .returning();
+    // Paying a year (including next year, in advance) extends membership through its December 31.
+    if (paymentStatus === "Paid") await extendMembershipThrough(db, id, year);
 
     await writeAudit(req, {
       moduleName: "Member Management",
@@ -1416,6 +1452,7 @@ router.get("/:id/students", async (req, res) => {
         address:         studentsTable.address,
         volunteerParent: studentsTable.volunteerParent,
         volunteerArea:   studentsTable.volunteerArea,
+        primaryMemberRole: studentsTable.primaryMemberRole,
       })
       .from(studentsTable)
       .where(eq(studentsTable.memberId, id))

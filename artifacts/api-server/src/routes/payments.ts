@@ -2,11 +2,13 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   portalSettingsTable,
-  studentsTable,
+  paymentsTable,
   membershipPaymentsTable,
 } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, like, or } from "drizzle-orm";
 import Stripe from "stripe";
+import { templeDate } from "../lib/membership";
+import { extendMembershipThrough, registrationBalance } from "../lib/registration-balance";
 
 const router = Router();
 
@@ -21,18 +23,35 @@ router.get("/config", async (_req, res) => {
   res.json({ publishableKey: publishableKey ?? "" });
 });
 
-// POST /api/payments/create-intent — creates a Stripe PaymentIntent
+// POST /api/payments/create-intent — creates a Stripe PaymentIntent for a registration's
+// outstanding balance. The amount is computed server-side, and online payment is offered
+// only to members BHT administration has validated (new members pay at the Temple Desk).
 router.post("/create-intent", async (req, res) => {
   try {
-    const { amount, studentCode, studentName, description } = req.body as {
-      amount: number;      // in cents
+    const { studentCode, studentName, description } = req.body as {
       studentCode: string;
       studentName: string;
       description: string;
     };
-
-    if (!amount || amount < 100) {
-      res.status(400).json({ error: "Invalid payment amount." });
+    if (!studentCode || typeof studentCode !== "string") {
+      res.status(400).json({ error: "studentCode is required." });
+      return;
+    }
+    const balance = await registrationBalance(db, studentCode);
+    if (!balance) {
+      res.status(404).json({ error: "Registration not found." });
+      return;
+    }
+    if (!balance.onlinePaymentEligible) {
+      res.status(403).json({
+        error: "Online payment is available after BHT administration validates the membership. Please pay at the Temple Administration Desk.",
+        notEligible: true,
+      });
+      return;
+    }
+    const amount = Math.round(balance.total * 100);
+    if (amount < 100) {
+      res.status(400).json({ error: "There is no outstanding balance to pay online." });
       return;
     }
 
@@ -53,7 +72,7 @@ router.post("/create-intent", async (req, res) => {
       metadata: { studentCode, studentName },
     });
 
-    res.json({ clientSecret: paymentIntent.client_secret });
+    res.json({ clientSecret: paymentIntent.client_secret, amount: balance.total });
   } catch (err: unknown) {
     console.error("Stripe create-intent error:", err);
     res.status(500).json({
@@ -100,18 +119,6 @@ router.post("/record-membership", async (req, res) => {
       return;
     }
 
-    // Look up the student to find the linked member
-    const [student] = await db
-      .select({ memberId: studentsTable.memberId })
-      .from(studentsTable)
-      .where(eq(studentsTable.studentCode, studentCode))
-      .limit(1);
-
-    if (!student?.memberId) {
-      res.status(404).json({ error: "Student or linked member not found" });
-      return;
-    }
-
     // Verify PaymentIntent with Stripe
     const stripe  = new Stripe(secretKey);
     const intent  = await stripe.paymentIntents.retrieve(paymentIntentId);
@@ -129,44 +136,57 @@ router.post("/record-membership", async (req, res) => {
       return;
     }
 
-    // Read membership fee from portal settings (server-side — never from client)
-    const mfSetting = await getSetting("stripe_membership_fee");
-    const amountDue = mfSetting ? parseFloat(mfSetting) : 150;
+    // 3. Apply the Stripe-verified amount to outstanding membership years first, then
+    //    course fees. An intent is applied once: rows it paid carry its id as receipt.
+    const result = await db.transaction(async tx => {
+      const [alreadyApplied] = await tx.select({ id: paymentsTable.id }).from(paymentsTable)
+        .where(eq(paymentsTable.receiptId, paymentIntentId)).limit(1);
+      const [alreadyAppliedMembership] = await tx.select({ id: membershipPaymentsTable.id })
+        .from(membershipPaymentsTable)
+        .where(or(
+          eq(membershipPaymentsTable.receiptId, paymentIntentId),
+          like(membershipPaymentsTable.notes, `%${paymentIntentId}%`),
+        )).limit(1);
+      if (alreadyApplied || alreadyAppliedMembership) return { applied: 0, remaining: 0, duplicate: true };
 
-    // The PaymentIntent covers the full registration total (membership + course fees).
-    // We record only the membership portion: amountPaid = amountDue when the
-    // total paid covers at least the membership fee; partial otherwise.
-    // Amounts are always set from portal settings — never from client.
-    const totalPaid = intent.amount / 100;
-    const amountPaid = totalPaid >= amountDue ? amountDue : totalPaid;
-    const status: "Paid" | "Pending" = amountPaid >= amountDue ? "Paid" : "Pending";
-    const today = new Date().toISOString().slice(0, 10);
-
-    await db
-      .insert(membershipPaymentsTable)
-      .values({
-        memberId:       student.memberId,
-        membershipYear: new Date().getFullYear(),
-        amountDue:      String(amountDue),
-        amountPaid:     String(amountPaid),
-        paymentStatus:  status,
-        paymentMethod:  "Stripe",
-        paymentDate:    today,
-        notes:          `Verified via Stripe PaymentIntent ${paymentIntentId}`,
-      })
-      .onConflictDoUpdate({
-        target: [membershipPaymentsTable.memberId, membershipPaymentsTable.membershipYear],
-        set: {
-          amountDue:     String(amountDue),
-          amountPaid:    String(amountPaid),
-          paymentStatus: status,
+      const balance = await registrationBalance(tx, studentCode);
+      if (!balance) return null;
+      const today = templeDate();
+      let remaining = Math.round(intent.amount) / 100;
+      let applied = 0;
+      for (const item of balance.items) {
+        if (item.balance <= 0 || remaining <= 0) continue;
+        const payment = Math.min(item.balance, remaining);
+        const amountPaid = (item.amountPaid + payment).toFixed(2);
+        const paid = item.amountPaid + payment >= item.amountDue;
+        const update = {
+          amountPaid,
+          paymentStatus: paid ? "Paid" as const : "Pending" as const,
           paymentMethod: "Stripe",
-          paymentDate:   today,
-          notes:         `Verified via Stripe PaymentIntent ${paymentIntentId}`,
-        },
-      });
-
-    res.json({ success: true, status, amountPaid, amountDue });
+          receiptId: paymentIntentId,
+          paymentDate: today,
+          ...(paid ? { pendingReason: null } : {}),
+        };
+        if (item.kind === "course") {
+          await tx.update(paymentsTable).set(update).where(eq(paymentsTable.id, item.id));
+        } else {
+          const [row] = await tx.update(membershipPaymentsTable)
+            .set({ ...update, notes: `Verified via Stripe PaymentIntent ${paymentIntentId}` })
+            .where(eq(membershipPaymentsTable.id, item.id))
+            .returning({ memberId: membershipPaymentsTable.memberId, membershipYear: membershipPaymentsTable.membershipYear });
+          if (paid && row) await extendMembershipThrough(tx, row.memberId, row.membershipYear);
+        }
+        remaining = Math.round((remaining - payment) * 100) / 100;
+        applied = Math.round((applied + payment) * 100) / 100;
+      }
+      return { applied, remaining, duplicate: false };
+    });
+    if (!result) {
+      res.status(404).json({ error: "Registration not found" });
+      return;
+    }
+    const status = result.remaining > 0 ? "Pending" : "Paid";
+    res.json({ success: true, status, amountPaid: result.applied, duplicate: result.duplicate });
   } catch (err: unknown) {
     console.error("record-membership error:", err);
     res.status(500).json({ error: "Failed to record membership payment" });

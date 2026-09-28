@@ -170,7 +170,9 @@ export const courseLevelsTable = pgTable("course_levels", {
 
 export const membersTable = pgTable("members", {
   id: serial("id").primaryKey(),
-  name:             text("name"),
+  firstName:        text("first_name"),
+  lastName:         text("last_name"),
+  name:             text("name"),         // full name "First Last", kept in sync with first/last name
   email:            text("email"),
   phone:            text("phone"),
   employer:         text("employer"),
@@ -292,6 +294,8 @@ export const paymentsTable = pgTable("payments", {
   paymentMethod: text("payment_method"),   // Check, Zelle, Cash
   receiptId: text("receipt_id"),
   paymentDate: text("payment_date"),
+  // Why an unpaid balance is waiting: "Temple Desk Payment" | "Temple Desk Validation/Payment"
+  pendingReason: text("pending_reason"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -471,6 +475,7 @@ export const membershipPaymentsTable = pgTable("membership_payments", {
   receiptId:      text("receipt_id"),
   paymentDate:    text("payment_date"),
   notes:          text("notes"),
+  pendingReason:  text("pending_reason"),    // same values as payments.pending_reason
   updatedByAdminName: text("updated_by_admin_name"),
   updatedAt:      timestamp("updated_at"),
   createdAt:      timestamp("created_at").defaultNow(),

@@ -35,6 +35,7 @@ type Enrollment = {
   enrollDate: string;
   enrollStatus: string;
   paymentStatus: "Paid" | "Pending" | "Overdue";
+  pendingReason: string | null;
   amountDue: number;
   amountPaid: number;
   paymentMethod: string;
@@ -237,6 +238,7 @@ function groupRows(raw: RawRow[]): Student[] {
         enrollDate:    r.enrollDate as string ?? "",
         enrollStatus:  r.enrollStatus as string ?? "Enrolled",
         paymentStatus: r.paymentStatus as "Paid"|"Pending"|"Overdue" ?? "Pending",
+        pendingReason: r.pendingReason as string | null ?? null,
         amountDue:     r.amountDue as number ?? 0,
         amountPaid:    r.amountPaid as number ?? 0,
         paymentMethod: r.paymentMethod as string ?? "-",
@@ -324,6 +326,8 @@ function RegisteredSubjectsEditor({ student, onSaved }: { student: Student; onSa
   const [retry, setRetry] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // Every post-registration subject change records who made it, when, and why.
+  const [changeReason, setChangeReason] = useState("");
   const [nextKey, setNextKey] = useState(enrolledRows.length);
   const [rows, setRows] = useState<SubjectDraft[]>(() => enrolledRows.map((e, key) => ({
     key,
@@ -423,6 +427,10 @@ function RegisteredSubjectsEditor({ student, onSaved }: { student: Student; onSa
 
   async function saveSubjects() {
     if (!canManageSubjects || !meta || hasValidationErrors || missingExpectedEnrollment || saving) return;
+    if (!changeReason.trim()) {
+      setSaveError("Enter the reason for this subject change before saving.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -436,7 +444,9 @@ function RegisteredSubjectsEditor({ student, onSaved }: { student: Student; onSa
           courseLevelId: row.courseLevelId as number,
           sectionId: row.sectionId,
         })),
+        reason: changeReason.trim(),
       });
+      setChangeReason("");
       toast.success("Registered subjects updated");
       onSaved();
     } catch (err) {
@@ -527,6 +537,18 @@ function RegisteredSubjectsEditor({ student, onSaved }: { student: Student; onSa
                   );
                 })}
               </div>
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-secondary">Reason for change <span className="text-red-500">*</span></span>
+                <textarea
+                  value={changeReason}
+                  onChange={event => { setChangeReason(event.target.value); setSaveError(""); }}
+                  maxLength={500}
+                  rows={2}
+                  placeholder="e.g. Parent requested switching Hindi Level 1 to Level 2 at the desk"
+                  className="w-full text-xs border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary bg-white"
+                  data-testid="input-subject-change-reason"
+                />
+              </label>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => { setRows(previous => [...previous, { key: nextKey, courseId: "", courseLevelId: "", sectionId: null }]); setNextKey(value => value + 1); setSaveError(""); }} data-testid="button-add-subject">
                   <Plus className="w-3.5 h-3.5 mr-1" />Add subject
@@ -745,7 +767,7 @@ type MetaLevel    = { id: number; levelNumber: number; className: string; sectio
 type MetaCourse   = { id: number; name: string; icon: string; fee?: number | null; levels: MetaLevel[] };
 type Meta         = { nextCode?: string; courses: MetaCourse[] };
 
-type LinkedMember = { id: number; memberCode?: string | null; name: string | null; email: string | null; phone: string | null; address: string | null; createdAt: string; employer?: string | null };
+type LinkedMember = { id: number; memberCode?: string | null; name: string | null; email: string | null; phone: string | null; address: string | null; createdAt: string; membershipYear?: number | null; employer?: string | null };
 
 function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; onRegistered: () => void }) {
   const { activeYearsListLong, activeCurriculumYearLong, courseFee } = usePortalSettings();
@@ -764,7 +786,14 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
   const [memberLooking,     setMemberLooking]     = useState(false);
   const [memberNotFound,    setMemberNotFound]    = useState(false);
   const [creatingMember, setCreatingMember] = useState(false);
-  const [newMemberName,  setNewMemberName]  = useState("");
+  const [newMemberFirstName, setNewMemberFirstName] = useState("");
+  const [newMemberLastName,  setNewMemberLastName]  = useState("");
+  // Pre-fill from a single parent-name field: first word is the first name, the rest the last name.
+  function setNewMemberName(full: string) {
+    const parts = full.trim().split(/\s+/).filter(Boolean);
+    setNewMemberFirstName(parts[0] ?? "");
+    setNewMemberLastName(parts.slice(1).join(" "));
+  }
   const [newMemberPhone, setNewMemberPhone] = useState("");
   const [newMemberEmail, setNewMemberEmail] = useState("");
   const [addressParts, setAddressParts] = useState<AddressParts>({ ...EMPTY_ADDRESS });
@@ -877,7 +906,7 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
   }
 
   async function createAndLinkMember() {
-    if (!newMemberName.trim()) { toast.error("Parent/member name is required"); return; }
+    if (!newMemberFirstName.trim() || !newMemberLastName.trim()) { toast.error("Member first name and last name are required"); return; }
     const fieldErrors = validateAddressParts(addressParts);
     setAddressErrors(fieldErrors);
     if (Object.keys(fieldErrors).length) return;
@@ -888,14 +917,15 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
     try {
       const isTemple = membershipPath === "existing";
       const m = await adminApi.members.create({
-        name:             newMemberName.trim(),
+        firstName:        newMemberFirstName.trim(),
+        lastName:         newMemberLastName.trim(),
         phone:            newMemberPhone.trim() || null,
         email:            newMemberEmail.trim() || null,
         address:          formatted,
         isExistingMember: isTemple,
       }) as Awaited<ReturnType<typeof adminApi.members.create>> & { memberContextToken?: string; memberCode?: string | null; employer?: string | null };
       if (sequence !== memberSequence.current) return;
-      setLinkedMember({ id: m.id, memberCode: m.memberCode, name: m.name ?? newMemberName.trim(), phone: (m.phone ?? newMemberPhone.trim()) || null, email: (m.email ?? newMemberEmail.trim()) || null, address: formatted, createdAt: m.createdAt, employer: m.employer });
+      setLinkedMember({ id: m.id, memberCode: m.memberCode, name: m.name ?? `${newMemberFirstName.trim()} ${newMemberLastName.trim()}`, phone: (m.phone ?? newMemberPhone.trim()) || null, email: (m.email ?? newMemberEmail.trim()) || null, address: formatted, createdAt: m.createdAt, employer: m.employer });
       setMemberContextToken(m.memberContextToken ?? null);
       setAddress(formatted);
       setAddressConfirmed(true);
@@ -974,7 +1004,7 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
     setPrimaryRoleError("");
     if (!linkedMember) { toast.error("A temple member record must be linked first. Use the Temple Membership section above."); return; }
     if (!memberContextToken) { toast.error("The linked member context is missing. Change or relink the member before registering."); return; }
-    if (!membershipStatus(linkedMember.createdAt).isActive) {
+    if (!membershipStatus(linkedMember.createdAt, undefined, linkedMember.membershipYear).isActive) {
       toast.error("This membership expired on December 31. Renew it for this calendar year before registering.");
       return;
     }
@@ -1066,9 +1096,9 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
                        <button type="button" onClick={resetMemberPath}
                          className="text-xs text-red-500 hover:text-red-700 underline shrink-0 mt-0.5">Change</button>
                      </div>
-                     <div className={`rounded-xl border px-3 py-2 text-sm ${membershipStatus(linkedMember.createdAt).isActive ? "bg-green-50 border-green-200 text-green-800" : "bg-red-50 border-red-200 text-red-800"}`}>
-                       Membership {membershipStatus(linkedMember.createdAt).isActive ? "active" : "expired"} — {membershipStatus(linkedMember.createdAt).isActive ? "expires" : "expired"} {membershipExpiryLabel(linkedMember.createdAt)}.
-                       {!membershipStatus(linkedMember.createdAt).isActive && (
+                     <div className={`rounded-xl border px-3 py-2 text-sm ${membershipStatus(linkedMember.createdAt, undefined, linkedMember.membershipYear).isActive ? "bg-green-50 border-green-200 text-green-800" : "bg-red-50 border-red-200 text-red-800"}`}>
+                       Membership {membershipStatus(linkedMember.createdAt, undefined, linkedMember.membershipYear).isActive ? "active" : "expired"} — {membershipStatus(linkedMember.createdAt, undefined, linkedMember.membershipYear).isActive ? "expires" : "expired"} {membershipExpiryLabel(linkedMember.createdAt, linkedMember.membershipYear)}.
+                       {!membershipStatus(linkedMember.createdAt, undefined, linkedMember.membershipYear).isActive && (
                          <Button type="button" size="sm" className="mt-2 w-full" disabled={renewingMember} onClick={renewLinkedMember}>
                            {renewingMember ? "Renewing…" : "Renew Membership to Continue"}
                          </Button>
@@ -1191,7 +1221,10 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
                       <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
                         <p className="text-xs font-semibold text-amber-800">No member found. Confirm details to create a member record:</p>
                         <div className="space-y-2">
-                          <input value={newMemberName}  onChange={e => setNewMemberName(e.target.value)}  placeholder="Full name *" className={inputCls} />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input value={newMemberFirstName} onChange={e => setNewMemberFirstName(e.target.value)} placeholder="First name *" className={inputCls} />
+                            <input value={newMemberLastName}  onChange={e => setNewMemberLastName(e.target.value)}  placeholder="Last name *"  className={inputCls} />
+                          </div>
                           <input value={newMemberPhone} onChange={e => setNewMemberPhone(e.target.value)} placeholder="Phone number"  className={inputCls} />
                           <input value={newMemberEmail} onChange={e => setNewMemberEmail(e.target.value)} placeholder="Email address" className={inputCls} />
                         </div>
@@ -1217,7 +1250,10 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
                       <div className="space-y-2">
                         <div>
                           <label className="text-xs font-medium text-amber-900 block mb-1">Parent / Guardian Name <span className="text-red-500">*</span></label>
-                          <input value={newMemberName}  onChange={e => setNewMemberName(e.target.value)}  placeholder="Full name (from father's info)" className={inputCls} />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input value={newMemberFirstName} onChange={e => setNewMemberFirstName(e.target.value)} placeholder="First name" className={inputCls} />
+                            <input value={newMemberLastName}  onChange={e => setNewMemberLastName(e.target.value)}  placeholder="Last name"  className={inputCls} />
+                          </div>
                         </div>
                         <div>
                           <label className="text-xs font-medium text-amber-900 block mb-1">Phone Number</label>
@@ -1229,7 +1265,7 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
                         </div>
                       </div>
                       <AddressFields value={addressParts} onChange={next => { setAddressParts(next); setAddressErrors({}); }} errors={addressErrors} />
-                      <button type="button" onClick={createAndLinkMember} disabled={creatingMember || !newMemberName.trim()}
+                      <button type="button" onClick={createAndLinkMember} disabled={creatingMember || !newMemberFirstName.trim() || !newMemberLastName.trim()}
                         className="w-full py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-60 flex items-center justify-center gap-2 font-medium">
                         {creatingMember && <Loader2 className="w-4 h-4 animate-spin" />}
                         Create Parent Membership &amp; Continue
@@ -1452,7 +1488,7 @@ function PaymentDrawer({ student, onClose, onRefresh }: {
                   )}
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${PAY_BADGE[e.paymentStatus] ?? "bg-gray-100 text-gray-500"}`}>
-                  {e.paymentStatus}
+                  {e.paymentStatus === "Pending" && e.pendingReason ? `Pending – ${e.pendingReason}` : e.paymentStatus}
                 </span>
               </div>
 

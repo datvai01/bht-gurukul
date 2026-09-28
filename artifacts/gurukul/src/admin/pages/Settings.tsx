@@ -67,6 +67,8 @@ export default function Settings() {
   const [regCurrYear,   setRegCurrYear]   = useState("2027-2028");
   const [regOpenDate,   setRegOpenDate]   = useState("");
   const [regCloseDate,  setRegCloseDate]  = useState("");
+  const [sessionStartDate, setSessionStartDate] = useState("");
+  const [sessionEndDate,   setSessionEndDate]   = useState("");
   const [regWinSaving,  setRegWinSaving]  = useState(false);
   const [regWinSaved,   setRegWinSaved]   = useState(false);
   const [regWinError,   setRegWinError]   = useState<string | null>(null);
@@ -116,6 +118,7 @@ export default function Settings() {
 
   const [stripePubKey,    setStripePubKey]    = useState("");
   const [stripeSecretKey, setStripeSecretKey] = useState("");
+  const [stripeSecretConfigured, setStripeSecretConfigured] = useState(false);
   const [stripeMemberFee, setStripeMemberFee] = useState("150");
   const [stripeCourseFee, setStripeCourseFee] = useState("35");
   const [showSecret,      setShowSecret]      = useState(false);
@@ -207,6 +210,8 @@ export default function Settings() {
         if (s.registration_curriculum_year) setRegCurrYear(s.registration_curriculum_year);
         if (s.registration_open_date  !== undefined) setRegOpenDate(s.registration_open_date);
         if (s.registration_close_date !== undefined) setRegCloseDate(s.registration_close_date);
+        if (s.session_start_date !== undefined) setSessionStartDate(s.session_start_date);
+        if (s.session_end_date   !== undefined) setSessionEndDate(s.session_end_date);
       })
       .catch(() => {});
   }, [isAdmin]);
@@ -216,6 +221,10 @@ export default function Settings() {
       setRegWinError("Start date must be on or before the end date.");
       return;
     }
+    if (sessionStartDate && sessionEndDate && sessionStartDate > sessionEndDate) {
+      setRegWinError("Session Start Date must be on or before the Session End Date.");
+      return;
+    }
     setRegWinSaving(true);
     setRegWinError(null);
     try {
@@ -223,6 +232,8 @@ export default function Settings() {
         registration_curriculum_year: regCurrYear,
         registration_open_date:       regOpenDate,
         registration_close_date:      regCloseDate,
+        session_start_date:           sessionStartDate,
+        session_end_date:             sessionEndDate,
       });
       setRegWinSaved(true);
       setTimeout(() => setRegWinSaved(false), 3000);
@@ -258,7 +269,8 @@ export default function Settings() {
     adminApi.settings.getAll()
       .then((s: Record<string, string>) => {
         setStripePubKey(s.stripe_publishable_key ?? "");
-        setStripeSecretKey(s.stripe_secret_key ?? "");
+        setStripeSecretKey("");
+        setStripeSecretConfigured(s.stripe_secret_key_configured === "true");
         setStripeMemberFee(s.stripe_membership_fee ?? "150");
         setStripeCourseFee(s.stripe_course_fee ?? "35");
       })
@@ -270,12 +282,18 @@ export default function Settings() {
     setStripeSaving(true);
     setStripeError(null);
     try {
+      const newSecret = stripeSecretKey.trim();
       await adminApi.settings.saveAll({
         stripe_publishable_key: stripePubKey.trim(),
-        stripe_secret_key:      stripeSecretKey.trim(),
         stripe_membership_fee:  stripeMemberFee.trim(),
         stripe_course_fee:      stripeCourseFee.trim(),
+        // The stored secret is never sent to the browser; only send one when the admin typed a new key.
+        ...(newSecret ? { stripe_secret_key: newSecret } : {}),
       });
+      if (newSecret) {
+        setStripeSecretConfigured(newSecret !== "sk_test_placeholder");
+        setStripeSecretKey("");
+      }
       setStripeSaved(true);
       setTimeout(() => setStripeSaved(false), 3000);
     } catch {
@@ -551,6 +569,30 @@ export default function Settings() {
                   />
                 </div>
               </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Session Start Date</Label>
+                  <Input
+                    type="date"
+                    value={sessionStartDate}
+                    onChange={e => { setSessionStartDate(e.target.value); setRegWinError(null); }}
+                    className="rounded-xl"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Session End Date</Label>
+                  <Input
+                    type="date"
+                    value={sessionEndDate}
+                    onChange={e => { setSessionEndDate(e.target.value); setRegWinError(null); }}
+                    className="rounded-xl"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground -mt-2">
+                Students must be at least 6 years old on the Session Start Date. Public registration stays closed until it is set.
+              </p>
 
               {regOpenDate && regCloseDate && regOpenDate <= regCloseDate && (() => {
                 const today = new Date().toISOString().slice(0, 10);
@@ -851,7 +893,7 @@ export default function Settings() {
               <div className="border-t border-border pt-4 space-y-4">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Stripe API Keys</p>
 
-                {(stripePubKey === "pk_test_placeholder" || !stripePubKey) ? (
+                {(stripePubKey === "pk_test_placeholder" || !stripePubKey || !stripeSecretConfigured) ? (
                   <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
                     <AlertCircle className="w-4 h-4 shrink-0" />
                     Using placeholder keys — online payments are disabled until real keys are entered.
@@ -880,7 +922,9 @@ export default function Settings() {
                       type={showSecret ? "text" : "password"}
                       value={stripeSecretKey}
                       onChange={e => setStripeSecretKey(e.target.value)}
-                      placeholder="sk_live_... or sk_test_..."
+                      placeholder={stripeSecretConfigured
+                        ? "•••••••• (saved — leave blank to keep current key)"
+                        : "sk_live_... or sk_test_..."}
                       className="rounded-xl font-mono text-sm pr-10"
                     />
                     <button

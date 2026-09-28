@@ -59,6 +59,30 @@ export type CurrentRegistrationSummary = {
   }>;
 };
 
+export type RegistrationBalance = {
+  studentId: number;
+  studentCode: string;
+  memberId: number;
+  curriculumYear: string;
+  memberValidated: boolean;
+  onlinePaymentEligible: boolean;
+  items: Array<{
+    kind: "course" | "membership";
+    id: number;
+    label: string;
+    amountDue: number;
+    amountPaid: number;
+    balance: number;
+    pendingReason: string | null;
+  }>;
+  total: number;
+};
+
+export type DuplicateStudentCheck = {
+  student: { studentCode: string; name: string; dob: string | null; grade: string | null } | null;
+  currentRegistration: CurrentRegistrationSummary | null;
+};
+
 export const adminApi = {
   teachers: {
     list:              () => request<unknown[]>("GET", "/teachers"),
@@ -84,12 +108,24 @@ export const adminApi = {
       address: string; volunteerParent?: boolean; volunteerArea?: string;
       registrationSource?: "public" | "admin";
       membershipFeeDecision?: string;
+      advanceMembershipRenewal?: boolean;
+      policyAccepted?: boolean;
+      studentCode?: string;
       enrollments: { courseLevelId: number; sectionId?: number | null; enrollDate?: string; amountDue?: string }[];
-    }) => request<{ success: boolean; studentCode: string; studentId: number }>("POST", "/students", data),
+    }) => request<{ success: boolean; studentCode: string; studentId: number; isNewMember: boolean; balance: RegistrationBalance | null }>("POST", "/students", data),
+    checkDuplicate: (data: { memberId: number; firstName: string; lastName: string; dob: string }) =>
+      request<DuplicateStudentCheck>("POST", "/students/check-duplicate", data),
+    paymentBalance: (studentCode: string, memberId: number) =>
+      request<RegistrationBalance>("GET", `/students/${encodeURIComponent(studentCode)}/payment-balance?memberId=${memberId}`),
+    chooseTempleDeskPayment: (studentCode: string, memberId: number) =>
+      request<{ success: boolean; paymentStatus: string; balance: RegistrationBalance | null }>(
+        "POST", `/students/${encodeURIComponent(studentCode)}/payment-choice`, { memberId, choice: "temple_desk" },
+      ),
     update:        (code: string, data: unknown) => request("PATCH", `/students/${code}`, data),
     setSubjects:   (code: string, data: {
       subjects: { courseLevelId: number; sectionId: number | null }[];
       expectedEnrollments: { enrollmentId: number; courseLevelId: number; sectionId: number | null }[];
+      reason: string;
     }) =>
       request<{ success: boolean }>("PATCH", `/students/${code}/subjects`, data),
     setStatus:     (code: string, isActive: boolean) => request("PATCH", `/students/${code}/status`, { isActive }),
@@ -135,7 +171,7 @@ export const adminApi = {
       request<{ success: true; maskedEmail: string }>("POST", "/members/email-verification/request", data),
     verifyEmailCode: (data: { phone: string; email?: string; identifier?: string; code: string; memberType: "existing" | "new" }) =>
       request<{ success: true; memberExists: boolean }>("POST", "/members/email-verification/verify", data),
-    lookup: (phone: string, email?: string) => request<{ id: number; memberCode: string | null; memberContextToken: string; name: string | null; email: string | null; phone: string | null; employer: string | null; address: string | null; membershipYear: number | null; createdAt: string; memFeeStatus: string | null; memFeePaid: number; memFeeDue: number }>("POST", "/members/lookup", email ? { phone, email } : { phone }),
+    lookup: (phone: string, email?: string) => request<{ id: number; memberCode: string | null; memberContextToken: string; name: string | null; email: string | null; phone: string | null; employer: string | null; address: string | null; membershipYear: number | null; createdAt: string; validationStatus: string | null; memFeeStatus: string | null; memFeePaid: number; memFeeDue: number }>("POST", "/members/lookup", email ? { phone, email } : { phone }),
     list: (params?: Record<string, string>) => {
       const qs = params ? "?" + new URLSearchParams(params).toString() : "";
       return request<{
@@ -161,9 +197,9 @@ export const adminApi = {
       fatherName: string | null; fatherPhone: string | null; fatherEmail: string | null; fatherEmployer: string | null;
       address: string | null; volunteerParent: boolean | null; volunteerArea: string | null;
     }>>("GET", `/members/${memberId}/students`),
-    create: (data: { name: string | null; phone?: string | null; email?: string | null; employer?: string | null; address?: string; isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number | null; memberType?: "new" }) =>
-      request<{ id: number; memberCode: string | null; memberContextToken: string; isExistingMember: boolean; name: string | null; email: string | null; phone: string | null; employer: string | null; address: string | null; createdAt: string }>("POST", "/members", data),
-    fullUpdate: (id: number, data: { name: string; email?: string | null; phone?: string | null; isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number | null; address?: string | null }) =>
+    create: (data: { firstName: string; lastName: string; phone?: string | null; email?: string | null; employer?: string | null; address?: string; isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number | null; memberType?: "new" }) =>
+      request<{ id: number; memberCode: string | null; memberContextToken: string; isExistingMember: boolean; firstName: string | null; lastName: string | null; name: string | null; email: string | null; phone: string | null; employer: string | null; address: string | null; createdAt: string }>("POST", "/members", data),
+    fullUpdate: (id: number, data: { firstName: string; lastName: string; email?: string | null; phone?: string | null; isExistingMember?: boolean; policyAgreed?: boolean; membershipYear?: number | null; address?: string | null }) =>
       request("PUT", `/members/${id}`, data),
     patch: (id: number, data: unknown) => request("PATCH", `/members/${id}`, data),
     renew: (id: number, paymentData?: {

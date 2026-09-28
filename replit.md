@@ -120,6 +120,40 @@ Enums: teacher_status, course_level_status, enrollment_status, payment_status, a
 
 Push schema: `cd lib/db && pnpm run push-force`.
 
+## Public Student Registration (`/register`)
+
+Implements "BHT Gurukul Student Registration Flow & Validations" (v4/v6).
+
+**Flow:** choose Existing BHT Member / New Member → email OTP (existing members see only a masked email
+before OTP; new members' phone and email must not exist anywhere in BHT records) → new members complete
+membership (first and last name stored separately) → student details, checked for age (≥ 6 on the Session
+Start Date), duplicate student (member + first + last name + DOB) and duplicate current-year registration →
+course selection (one level per course, course-specific fees) → policy acceptance → submit.
+
+**Rules enforced on the server** (`routes/admin/students.ts`, `routes/admin/members.ts`, `routes/payments.ts`):
+- One registration per student per curriculum year; parents cannot change subjects after submission
+  (admins can, with a required reason recorded in the audit log).
+- Fees come only from administrator configuration — nothing is hard-coded. A course with no fee cannot be
+  selected, and new memberships are blocked if the membership fee is not configured.
+- Membership ends December 31 of its year; a paid advance renewal (next year's `membership_payments` row
+  marked Paid) extends it through December 31 of the following year (`members.membership_year`).
+- Payment never blocks registration. Validated members choose Pay Online or Temple Desk; new/unvalidated
+  members pay at the Temple Desk only. Unpaid rows carry `pending_reason`
+  ("Temple Desk Payment" or "Temple Desk Validation/Payment").
+
+**Admin configuration required before public registration opens** (Settings + Course Management):
+Registration curriculum year, Registration Open/Close dates, **Session Start/End dates**, annual
+membership fee, and a **fee on every course**. Missing values block registration with a clear message.
+
+**Schema additions:** `members.first_name`, `members.last_name` (existing names are split automatically
+at API startup), `payments.pending_reason`, `membership_payments.pending_reason`. Apply with
+`pnpm --filter @workspace/db run push`.
+
+**Local development (outside Replit):** the Vite dev server proxies `/api` when `API_PROXY_TARGET` is set,
+e.g. `PORT=5173 BASE_PATH=/ API_PROXY_TARGET=http://localhost:3001 pnpm --filter @workspace/gurukul run dev`.
+With `MEMBER_EMAIL_PROVIDER=console` (development only, ignored in production) verification codes are
+written to the API log instead of being emailed.
+
 ## Structure
 
 ```text

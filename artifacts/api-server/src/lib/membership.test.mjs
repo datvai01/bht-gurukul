@@ -46,3 +46,24 @@ test("Eastern New Year boundary is consistent even when the browser or server ru
   assert.equal(clientYear(date("2027-01-01T05:00:00Z")), 2027);
   assert.equal(membership(null, "2026-12-31T12:00:00-05:00").isActive, false);
 });
+test("a paid advance renewal keeps the membership active through December 31 of the following year", () => {
+  const start = "2026-03-10T12:00:00-05:00";
+  for (const status of [serverStatus(date(start), date("2027-06-01T12:00:00-04:00"), 2027), clientStatus(start, date("2027-06-01T12:00:00-04:00"), 2027)]) {
+    assert.equal(status.isActive, true);
+  }
+  assert.equal(serverStatus(date(start), date("2028-01-01T00:00:00-05:00"), 2027).isActive, false);
+  assert.equal(membershipExpiryLabel(start, 2027), "December 31, 2027");
+  assert.equal(serverExpiry(date(start), 2027).toISOString(), "2028-01-01T05:00:00.000Z");
+  // An older or missing paid-through year never shortens the start-year term.
+  assert.equal(membershipExpiryLabel(start, 2020), "December 31, 2026");
+  assert.equal(serverStatus(date(start), date("2026-12-31T12:00:00-05:00"), null).isActive, true);
+});
+
+test("memberships started January 2 or December 20 both end December 31 of that same year", () => {
+  for (const start of ["2026-01-02T10:00:00-05:00", "2026-12-20T10:00:00-05:00"]) {
+    assert.equal(membershipExpiryLabel(start), "December 31, 2026");
+    assert.equal(serverExpiry(date(start)).toISOString(), "2027-01-01T05:00:00.000Z");
+    assert.equal(membership(start, "2026-12-31T23:00:00-05:00").isActive, true);
+    assert.equal(membership(start, "2027-01-01T00:00:01-05:00").isActive, false);
+  }
+});

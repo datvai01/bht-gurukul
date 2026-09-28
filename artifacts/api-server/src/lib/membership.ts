@@ -20,18 +20,24 @@ export function templeDate(date: Date = new Date()): string {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-export function membershipExpiry(start: Date): Date {
-  // January 1 at midnight in New York is always 05:00 UTC (EST).
-  return new Date(Date.UTC(templeYear(start) + 1, 0, 1, 5));
+// A membership ends on December 31 of its start year, or of a later year the
+// member has already paid for in advance (members.membership_year).
+export function membershipEndYear(start: Date, paidThroughYear?: number | null): number {
+  return Math.max(templeYear(start), paidThroughYear ?? 0);
 }
 
-export function membershipStatus(start: Date | null, now: Date = new Date()) {
+export function membershipExpiry(start: Date, paidThroughYear?: number | null): Date {
+  // January 1 at midnight in New York is always 05:00 UTC (EST).
+  return new Date(Date.UTC(membershipEndYear(start, paidThroughYear) + 1, 0, 1, 5));
+}
+
+export function membershipStatus(start: Date | null, now: Date = new Date(), paidThroughYear?: number | null) {
   if (!start || !Number.isFinite(start.getTime())) {
     return { isActive: false, expiringSoon: false };
   }
-  const isActive = start <= now && templeYear(start) === templeYear(now);
+  const isActive = start <= now && membershipEndYear(start, paidThroughYear) >= templeYear(now);
   return {
     isActive,
-    expiringSoon: isActive && membershipExpiry(start).getTime() - now.getTime() <= 30 * 24 * 60 * 60 * 1000,
+    expiringSoon: isActive && membershipExpiry(start, paidThroughYear).getTime() - now.getTime() <= 30 * 24 * 60 * 60 * 1000,
   };
 }

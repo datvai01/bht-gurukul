@@ -13,10 +13,17 @@ import {
   portalSettingsTable,
   auditLogsTable,
 } from "@workspace/db/schema";
-import { eq, asc, and, desc, sql, inArray, isNull, count } from "drizzle-orm";
+import { eq, asc, and, sql, inArray, isNull, count } from "drizzle-orm";
 import { writeAudit } from "../../lib/audit";
 import { isCompleteAddress } from "../../lib/address";
-import { membershipStatus, templeDate } from "../../lib/membership";
+import { membershipStatus, templeDate, templeYear } from "../../lib/membership";
+import {
+  TEMPLE_DESK_VALIDATION_PAYMENT,
+  configuredFee,
+  isValidatedMember,
+  markTempleDeskPending,
+  registrationBalance,
+} from "../../lib/registration-balance";
 import { allocateStudentCode, formatStudentCode } from "../../lib/student-code";
 import { pgErrorInfo } from "../../lib/pg-error";
 import {
@@ -29,6 +36,9 @@ import { getVerifiedAdmin, isSameOriginRequest } from "../../lib/admin-session";
 import { verifyPublicMemberAccess } from "../../lib/public-member-access";
 
 const router: IRouter = Router();
+// Students must be at least 6 on the administrator-configured Session Start Date.
+const MIN_STUDENT_AGE = 6;
+const MAX_STUDENT_AGE = 22;
 const highestStudentNumber = sql<number>`COALESCE(MAX(CASE WHEN ${studentsTable.studentCode} ~ '^GK-[0-9]+$' THEN substring(${studentsTable.studentCode} FROM '^GK-([0-9]+)$')::int END), 0)`;
 
 function parseDateOfBirth(value: unknown): Date | null {
@@ -171,6 +181,7 @@ async function buildStudentList() {
       // Payment
       paymentId:      paymentsTable.id,
       paymentStatus:  paymentsTable.paymentStatus,
+      pendingReason:  paymentsTable.pendingReason,
       amountDue:      paymentsTable.amountDue,
       amountPaid:     paymentsTable.amountPaid,
       paymentMethod:  paymentsTable.paymentMethod,
@@ -221,6 +232,7 @@ async function buildStudentList() {
     timing:         r.schedule ?? "",
     paymentId:      r.paymentId ?? null,
     paymentStatus:  (r.paymentStatus ?? "Pending") as "Paid" | "Pending" | "Overdue",
+    pendingReason:  r.pendingReason ?? null,
     amountDue:      parseFloat(r.amountDue ?? "0"),
     amountPaid:     parseFloat(r.amountPaid ?? "0"),
     paymentMethod:  r.paymentMethod ?? "-",
@@ -325,7 +337,7 @@ router.post("/", async (req, res) => {
       motherName, motherPhone, motherEmail, motherEmployer,
       fatherName, fatherPhone, fatherEmail, fatherEmployer,
       address, volunteerParent, volunteerArea,
-      membershipFeeDecision,
+      membershipFeeDecision, advanceMembershipRenewal, policyAccepted,
       enrollments = [],
     } = req.body as {
       studentCode?: string;
@@ -337,8 +349,21 @@ router.post("/", async (req, res) => {
       fatherName?: string; fatherPhone?: string; fatherEmail?: string; fatherEmployer?: string;
       address?: string; volunteerParent?: boolean; volunteerArea?: string;
       membershipFeeDecision?: string;
+      advanceMembershipRenewal?: boolean;
+      policyAccepted?: boolean;
       enrollments: { courseLevelId: number; sectionId?: number | null; enrollDate?: string; amountDue?: string }[];
     };
+
+    const settingRows = await db.select({ key: portalSettingsTable.key, value: portalSettingsTable.value })
+      .from(portalSettingsTable)
+      .where(inArray(portalSettingsTable.key, ["session_start_date", "stripe_course_fee", "stripe_membership_fee"]));
+    const setting = (key: string) => settingRows.find(row => row.key === key)?.value?.trim() || "";
+    const sessionStartDate = setting("session_start_date");
+    if (!verifiedAdmin && !isIsoCalendarDate(sessionStartDate)) {
+      return res.status(503).json({ error: "The session start date is not configured. Please contact the administration for assistance." });
+    }
+    // Fees come only from administrator configuration; nothing is assumed.
+    const membershipFee = configuredFee(setting("stripe_membership_fee"));
 
     // The current curriculum year is server-owned for unauthenticated/public registrations.
     const [configuredYear] = await db
@@ -387,6 +412,12 @@ router.post("/", async (req, res) => {
     )) {
       return res.status(400).json({ error: "Choose valid active course levels for all enrollments." });
     }
+    if (!verifiedAdmin && enrollments.length === 0) {
+      return res.status(400).json({ error: "Select at least one course." });
+    }
+    if (!verifiedAdmin && policyAccepted !== true) {
+      return res.status(400).json({ error: "Please accept the BHT Gurukul policies before submitting the registration." });
+    }
 
     const submittedLevelIds = enrollments.map(enrollment => enrollment.courseLevelId);
     const selectedCourses = submittedLevelIds.length
@@ -394,7 +425,9 @@ router.post("/", async (req, res) => {
         .select({
           levelId: courseLevelsTable.id,
           courseId: coursesTable.id,
+          courseName: coursesTable.name,
           ageGroup: coursesTable.ageGroup,
+          fee: coursesTable.fee,
         })
         .from(courseLevelsTable)
         .innerJoin(coursesTable, eq(coursesTable.id, courseLevelsTable.courseId))
@@ -409,7 +442,17 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "One or more selected course levels are no longer active. Refresh the course list and try again." });
     }
     if (new Set(selectedCourses.map(course => course.courseId)).size !== submittedLevelIds.length) {
-      return res.status(400).json({ error: "Choose only one level per course." });
+      return res.status(400).json({ error: "The same course cannot be selected more than once for a student." });
+    }
+    // Every course needs its own configured fee; an admin may enter the amount explicitly instead.
+    const unpricedCourse = enrollments.find(enrollment => {
+      const course = courseByLevelId.get(enrollment.courseLevelId)!;
+      const adminAmount = verifiedAdmin && enrollment.amountDue != null && configuredFee(String(enrollment.amountDue)) !== null;
+      return configuredFee(course.fee) === null && !adminAmount;
+    });
+    if (unpricedCourse) {
+      const name = courseByLevelId.get(unpricedCourse.courseLevelId)!.courseName;
+      return res.status(400).json({ error: `${name} does not have a registration fee configured yet. Please contact the administration.` });
     }
     const requestedSections = enrollments.filter(enrollment => enrollment.sectionId != null);
     const activeSections = requestedSections.length ? await db.select({
@@ -423,16 +466,21 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "A selected section is unavailable or does not belong to its course level." });
     }
 
-    const age = getAgeOnDate(dateOfBirth);
-    if (age > 22) {
-      return res.status(400).json({ error: "Students must be 22 years old or younger to register." });
+    // Age is measured on the Session Start Date (admin registrations fall back to today if unset).
+    const ageReferenceDate = isIsoCalendarDate(sessionStartDate) ? sessionStartDate : templeDate();
+    const age = getAgeOnDate(dateOfBirth, ageReferenceDate);
+    if (age < MIN_STUDENT_AGE) {
+      return res.status(400).json({ error: `Student must be at least ${MIN_STUDENT_AGE} years old on the session start date (${ageReferenceDate}).` });
+    }
+    if (age > MAX_STUDENT_AGE) {
+      return res.status(400).json({ error: `Students must be ${MAX_STUDENT_AGE} years old or younger to register.` });
     }
     for (const levelId of submittedLevelIds) {
       const ageGroup = courseByLevelId.get(levelId)!.ageGroup;
       const minimumAge = getMinimumCourseAge(ageGroup);
       if (age < minimumAge) {
         return res.status(400).json({
-          error: `Student must be at least ${minimumAge} years old for this course (${ageGroup || "minimum age 5"}).`,
+          error: `Student must be at least ${minimumAge} years old on the session start date for this course (${ageGroup}).`,
         });
       }
     }
@@ -442,6 +490,7 @@ router.post("/", async (req, res) => {
     if (primaryMemberRole !== "mother" && primaryMemberRole !== "father") {
       return res.status(400).json({ error: "Choose whether the linked member is the mother or father." });
     }
+    let isNewMember = verifiedAdmin ? membershipFeeDecision?.trim() === "New Member" : false;
     if (!verifiedAdmin) {
       const sessionSecret = process.env.SESSION_SECRET;
       if (!sessionSecret) {
@@ -453,6 +502,13 @@ router.post("/", async (req, res) => {
       if (!(validNewMemberContext || validExistingMemberContext) || !hasVerifiedPublicMemberAccess) {
         return res.status(401).json({ error: "Member verification is required before registering a student." });
       }
+      isNewMember = validNewMemberContext;
+    }
+    if (advanceMembershipRenewal && isNewMember) {
+      return res.status(400).json({ error: "Advance membership renewal is available to existing members only." });
+    }
+    if ((isNewMember || advanceMembershipRenewal) && membershipFee === null) {
+      return res.status(503).json({ error: "The annual membership fee is not configured. Please contact the administration." });
     }
     if (!isCompleteAddress(address)) {
       return res.status(400).json({ error: "A complete confirmed or updated home address with street, city, state and ZIP is required before registering a student." });
@@ -467,13 +523,15 @@ router.post("/", async (req, res) => {
         phone: membersTable.phone,
         email: membersTable.email,
         employer: membersTable.employer,
+        membershipYear: membersTable.membershipYear,
+        validationStatus: membersTable.validationStatus,
       })
       .from(membersTable)
       .where(eq(membersTable.id, memberId));
     if (!memberCheck) {
       return res.status(400).json({ error: "The specified temple member record does not exist." });
     }
-    if (!membershipStatus(memberCheck.createdAt).isActive) {
+    if (!membershipStatus(memberCheck.createdAt, undefined, memberCheck.membershipYear).isActive) {
       return res.status(400).json({ error: "This membership expired on December 31. Renew it for the current calendar year before registering a student." });
     }
     if (!isCompleteAddress(memberCheck.address) || memberCheck.address.trim() !== address.trim()) {
@@ -489,12 +547,24 @@ router.post("/", async (req, res) => {
         error: `The selected primary parent's ${primaryContacts.field} must match the linked member record.`,
       });
     }
+    // The verified member is the same parent (Mother or Father) on all of their students.
+    const recordedRoles = await db.selectDistinct({ role: studentsTable.primaryMemberRole })
+      .from(studentsTable)
+      .where(and(eq(studentsTable.memberId, memberId), sql`${studentsTable.primaryMemberRole} IN ('mother', 'father')`));
+    const recordedRole = recordedRoles.length === 1 ? recordedRoles[0]!.role : null;
+    if (recordedRole && recordedRole !== primaryMemberRole) {
+      return res.status(400).json({
+        error: `The verified member is recorded as the ${recordedRole === "mother" ? "Mother" : "Father"} on your other students. Select ${recordedRole === "mother" ? "Mother" : "Father"} as the Primary Member.`,
+      });
+    }
 
     // ── Smart dedup: reuse existing student profile under same member ─────────
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     const identityName = fullName.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
     const effectiveDob = dob!.trim();
     const today = templeDate();
+    // Unvalidated members (every new member) must pay at the Temple Desk after validation.
+    const unpaidReason = isValidatedMember(memberCheck.validationStatus) ? null : TEMPLE_DESK_VALIDATION_PAYMENT;
     const newRegistration = await db.transaction(async tx => {
       if (!verifiedAdmin) {
         const windowRows = await tx.select({
@@ -609,10 +679,32 @@ router.post("/", async (req, res) => {
           studentId: student.id, registrationId: registration.id,
           courseLevelId: enr.courseLevelId, sectionId: enr.sectionId ?? null, enrollDate: enr.enrollDate ?? today,
         }).returning({ id: enrollmentsTable.id });
+        // Course fees are administrator-configured; only an admin may override the amount.
+        const courseFeeDue = configuredFee(courseByLevelId.get(enr.courseLevelId)?.fee);
+        const adminOverride = verifiedAdmin && enr.amountDue != null ? configuredFee(String(enr.amountDue)) : null;
         await tx.insert(paymentsTable).values({
-          enrollmentId: enrollment.id, amountDue: enr.amountDue ?? "35.00",
-          amountPaid: "0.00", paymentStatus: "Pending",
+          enrollmentId: enrollment.id,
+          amountDue: (adminOverride ?? courseFeeDue ?? 0).toFixed(2),
+          amountPaid: "0.00", paymentStatus: "Pending", pendingReason: unpaidReason,
         });
+      }
+      const currentYear = templeYear();
+      const membershipYears = [
+        ...(isNewMember ? [currentYear] : []),
+        ...(advanceMembershipRenewal ? [currentYear + 1] : []),
+      ];
+      for (const membershipYear of membershipYears) {
+        await tx.insert(membershipPaymentsTable).values({
+          memberId,
+          membershipYear,
+          amountDue: (membershipFee ?? 0).toFixed(2),
+          amountPaid: "0.00",
+          paymentStatus: "Pending",
+          pendingReason: unpaidReason,
+          notes: membershipYear > currentYear
+            ? "Advance renewal selected during student registration"
+            : "New membership created during student registration",
+        }).onConflictDoNothing();
       }
       return { ...student, registrationId: registration.id };
     });
@@ -624,7 +716,14 @@ router.post("/", async (req, res) => {
       entityId: newRegistration.studentCode,
       newValue: { name: fullName, grade, curriculumYear: effectiveCurriculumYear, memberId },
     });
-    res.status(201).json({ success: true, studentCode: newRegistration.studentCode, studentId: newRegistration.id });
+    const balance = await registrationBalance(db, newRegistration.studentCode, memberId);
+    res.status(201).json({
+      success: true,
+      studentCode: newRegistration.studentCode,
+      studentId: newRegistration.id,
+      isNewMember,
+      balance,
+    });
   } catch (err: unknown) {
     if (err instanceof StudentSubjectsError) {
       if (err.message === "current-session-exists") {
@@ -998,6 +1097,124 @@ async function publicOrAdminMemberAuthorized(req: Parameters<typeof verifyPublic
   return Boolean(admin) || await verifyPublicMemberAccess(req, memberId);
 }
 
+// POST /api/admin/students/check-duplicate — before course selection, find an existing
+// student under the verified member (Member ID + first name + last name + date of birth)
+// and that student's registration for the current curriculum year, if any.
+router.post("/check-duplicate", async (req, res): Promise<void> => {
+  if (!isSameOriginRequest(req)) {
+    res.status(403).json({ error: "Request origin could not be verified." });
+    return;
+  }
+  const { memberId, firstName, lastName, dob } = (req.body ?? {}) as {
+    memberId?: unknown; firstName?: unknown; lastName?: unknown; dob?: unknown;
+  };
+  const memberNumber = Number(memberId);
+  if (!Number.isSafeInteger(memberNumber) || memberNumber < 1 ||
+      typeof firstName !== "string" || !firstName.trim() ||
+      typeof lastName !== "string" || !lastName.trim() ||
+      typeof dob !== "string" || !parseDateOfBirth(dob)) {
+    res.status(400).json({ error: "memberId, firstName, lastName and a valid dob are required." });
+    return;
+  }
+  try {
+    if (!await publicOrAdminMemberAuthorized(req, memberNumber)) {
+      res.status(401).json({ error: "Member access could not be verified." });
+      return;
+    }
+    const identityName = `${firstName.trim()} ${lastName.trim()}`
+      .normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    const matches = await db.select({
+      studentCode: studentsTable.studentCode,
+      name: studentsTable.name,
+      dob: studentsTable.dob,
+      grade: studentsTable.grade,
+    }).from(studentsTable).where(and(
+      eq(studentsTable.memberId, memberNumber),
+      sql`lower(regexp_replace(trim(${studentsTable.name}), '\\s+', ' ', 'g')) = ${identityName}`,
+      eq(studentsTable.dob, dob.trim()),
+    )).limit(2);
+    if (matches.length > 1) {
+      res.status(409).json({ error: "More than one student matches this member, name, and date of birth. Contact the Gurukul office to resolve the records." });
+      return;
+    }
+    const student = matches[0] ?? null;
+    if (!student) {
+      res.json({ student: null, currentRegistration: null });
+      return;
+    }
+    const admin = await getVerifiedAdmin(req);
+    const canReconcile = Boolean(admin) || await publicRegistrationWindowOpen();
+    const currentRegistration = await currentRegistrationSummary(student.studentCode, memberNumber, canReconcile, Boolean(admin));
+    res.json({ student, currentRegistration });
+  } catch (err) {
+    if (err instanceof StudentSubjectsError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    req.log.error({ err }, "Failed to check for a duplicate student");
+    res.status(500).json({ error: "Could not check for an existing student record." });
+  }
+});
+
+// GET /api/admin/students/:code/payment-balance?memberId=N — outstanding fees after registration
+router.get("/:code/payment-balance", async (req, res): Promise<void> => {
+  const memberId = Number(req.query.memberId);
+  if (!Number.isSafeInteger(memberId) || memberId < 1) {
+    res.status(400).json({ error: "A valid memberId is required." });
+    return;
+  }
+  try {
+    if (!await publicOrAdminMemberAuthorized(req, memberId)) {
+      res.status(401).json({ error: "Member access could not be verified." });
+      return;
+    }
+    const balance = await registrationBalance(db, req.params.code, memberId);
+    if (!balance) {
+      res.status(404).json({ error: "No registration was found for this student and member." });
+      return;
+    }
+    res.json(balance);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load payment balance");
+    res.status(500).json({ error: "Could not load the payment balance." });
+  }
+});
+
+// POST /api/admin/students/:code/payment-choice — the parent chose to pay at the Temple
+// Administration Desk. Registration stays submitted; unpaid rows record why they are pending.
+router.post("/:code/payment-choice", async (req, res): Promise<void> => {
+  if (!isSameOriginRequest(req)) {
+    res.status(403).json({ error: "Request origin could not be verified." });
+    return;
+  }
+  const { memberId, choice } = (req.body ?? {}) as { memberId?: unknown; choice?: unknown };
+  const memberNumber = Number(memberId);
+  if (!Number.isSafeInteger(memberNumber) || memberNumber < 1 || choice !== "temple_desk") {
+    res.status(400).json({ error: "memberId and choice \"temple_desk\" are required." });
+    return;
+  }
+  try {
+    if (!await publicOrAdminMemberAuthorized(req, memberNumber)) {
+      res.status(401).json({ error: "Member access could not be verified." });
+      return;
+    }
+    const result = await db.transaction(async tx => {
+      const balance = await registrationBalance(tx, req.params.code, memberNumber);
+      if (!balance) return null;
+      const reason = await markTempleDeskPending(tx, balance);
+      return { balance: await registrationBalance(tx, req.params.code, memberNumber), reason };
+    });
+    if (!result) {
+      res.status(404).json({ error: "No registration was found for this student and member." });
+      return;
+    }
+    res.json({ success: true, paymentStatus: `Pending – ${result.reason}`, balance: result.balance });
+  } catch (err) {
+    req.log.error({ err }, "Failed to record payment choice");
+    res.status(500).json({ error: "Could not record the payment choice." });
+  }
+});
+
 // GET /api/admin/students/:code/current-registration?memberId=N
 router.get("/:code/current-registration", async (req, res): Promise<void> => {
   const memberId = Number(req.query.memberId);
@@ -1053,8 +1270,8 @@ router.patch("/:code/current-registration", async (req, res): Promise<void> => {
       return;
     }
     const admin = await getVerifiedAdmin(req);
-    if (!admin && !await publicRegistrationWindowOpen()) {
-      res.status(403).json({ error: "Registration is currently closed. Please contact the administration for assistance." });
+    if (!admin) {
+      res.status(403).json({ error: "Subjects cannot be changed from the public site after registration. Please request changes through the Gurukul Administration." });
       return;
     }
     const requested: { courseLevelId: number; sectionId: number | null }[] = [];
@@ -1326,12 +1543,18 @@ router.patch("/:code/subjects", async (req, res): Promise<void> => {
     return;
   }
 
-  const { subjects, expectedEnrollments } = (req.body ?? {}) as {
+  const { subjects, expectedEnrollments, reason } = (req.body ?? {}) as {
     subjects?: unknown;
     expectedEnrollments?: unknown;
+    reason?: unknown;
   };
   if (!Array.isArray(subjects) || !Array.isArray(expectedEnrollments)) {
     res.status(400).json({ error: "subjects and expectedEnrollments must be arrays." });
+    return;
+  }
+  const changeReason = typeof reason === "string" ? reason.trim() : "";
+  if (!changeReason || changeReason.length > 500) {
+    res.status(400).json({ error: "Enter the reason for this subject change (up to 500 characters)." });
     return;
   }
   const expectedSnapshot: { enrollmentId: number; courseLevelId: number; sectionId: number | null }[] = [];
@@ -1538,22 +1761,14 @@ router.patch("/:code/subjects", async (req, res): Promise<void> => {
         const existing = existingByLevel.get(subject.courseLevelId);
         return !existing || (existing.status === "Withdrawn" && !paymentEnrollmentIds.has(existing.id));
       });
-      let defaultCourseFee = "35.00";
+      // A new subject must have its own configured course fee; fees are never assumed.
       if (paymentNeededLevels.some(subject => levelRows.find(level => level.id === subject.courseLevelId)?.courseFee == null)) {
-        const [feeSetting] = await tx
-          .select({ value: portalSettingsTable.value })
-          .from(portalSettingsTable)
-          .where(eq(portalSettingsTable.key, "stripe_course_fee"))
-          .limit(1);
-        defaultCourseFee = feeSetting?.value?.trim() || "35.00";
-        if (!Number.isFinite(Number(defaultCourseFee)) || Number(defaultCourseFee) < 0) {
-          throw new StudentSubjectsError(500, "The configured course registration fee is invalid.");
-        }
+        throw new StudentSubjectsError(400, "A selected course does not have a registration fee configured. Set the course fee in Course Management first.");
       }
 
       const feeForLevel = (levelId: number) => {
         const courseFee = levelRows.find(level => level.id === levelId)?.courseFee;
-        return courseFee ?? defaultCourseFee;
+        return courseFee!;
       };
       const today = templeDate();
       for (const subject of desiredSubjects) {
@@ -1627,7 +1842,7 @@ router.patch("/:code/subjects", async (req, res): Promise<void> => {
         entityName: student.name,
         entityId: req.params.code,
         previousValue: JSON.stringify(beforeValue),
-        newValue: JSON.stringify(afterValue),
+        newValue: JSON.stringify({ subjects: afterValue, reason: changeReason }),
         curriculumYear: currentRegistration ? activeYear : student.curriculumYear,
         ipAddress: req.socket?.remoteAddress ?? null,
         userAgent: req.get("user-agent") ?? null,
@@ -1803,6 +2018,7 @@ router.patch("/payments/:enrollmentId", async (req, res) => {
     if (amountDue     !== undefined) updates.amountDue     = String(amountDue);
     if (amountPaid    !== undefined) updates.amountPaid    = String(amountPaid);
     if (paymentStatus !== undefined) updates.paymentStatus = paymentStatus;
+    if (paymentStatus === "Paid") updates.pendingReason = null;
     if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod || null;
     if (receiptId     !== undefined) updates.receiptId     = receiptId     || null;
     if (paymentDate   !== undefined) updates.paymentDate   = paymentDate   || null;

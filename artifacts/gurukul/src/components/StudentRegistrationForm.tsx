@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { adminApi, type CurrentRegistrationSummary } from "@/lib/adminApi";
-import { membershipExpiryLabel, membershipStatus, templeYear } from "@/lib/membership";
+import { adminApi, type CurrentRegistrationSummary, type RegistrationBalance } from "@/lib/adminApi";
+import { membershipEndYear, membershipExpiryLabel, membershipStatus, templeYear } from "@/lib/membership";
 import { ensureRegistrationMember, type SavedRegistrationMember } from "@/lib/registration-member";
 import { resolveParentDetails, type PrimaryMemberRole } from "@/lib/primary-member";
 import {
@@ -25,7 +25,8 @@ import { toast } from "sonner";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_AGE = 22;
-const DEFAULT_MIN_AGE = 5;
+// Students must be at least 6 on the administrator-configured Session Start Date.
+const MIN_AGE = 6;
 
 function templeToday(): string {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -38,14 +39,14 @@ function templeToday(): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
-function dateYearsAgo(years: number): string {
-  const [year, month, day] = templeToday().split("-").map(Number);
+function dateYearsBefore(reference: string, years: number): string {
+  const [year, month, day] = reference.split("-").map(Number);
   const lastDayOfMonth = new Date(Date.UTC(year - years, month, 0)).getUTCDate();
   const date = new Date(Date.UTC(year - years, month - 1, Math.min(day, lastDayOfMonth)));
   return date.toISOString().slice(0, 10);
 }
 
-function ageOnDate(value: string): number | null {
+function ageOnDate(value: string, reference: string): number | null {
   if (!value) return null;
   const [year, month, day] = value.split("-").map(Number);
   const birthDate = new Date(year, month - 1, day);
@@ -55,13 +56,21 @@ function ageOnDate(value: string): number | null {
     birthDate.getMonth() !== month - 1 ||
     birthDate.getDate() !== day
   ) return null;
-  const [todayYear, todayMonth, todayDay] = templeToday().split("-").map(Number);
-  let age = todayYear - year;
+  const [refYear, refMonth, refDay] = reference.split("-").map(Number);
+  let age = refYear - year;
   if (
-    todayMonth < month ||
-    (todayMonth === month && todayDay < day)
+    refMonth < month ||
+    (refMonth === month && refDay < day)
   ) age--;
   return age;
+}
+
+function formatIsoDate(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+      .toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    : value;
 }
 
 const GRADES = [
@@ -105,12 +114,17 @@ function validatePhone(v: string): string { return _validateUSPhone(v, true); }
 function validateEmail(v: string): string { return _validateEmail(v, true); }
 function validatePersonName(v: string, label: string): string { return _validatePersonName(v, label); }
 
-function validateDob(v: string, minimumAge: number): string {
+// Age is measured on the Session Start Date, not the day the form is filled in.
+function validateDob(v: string, minimumAge: number, sessionStart: string): string {
   if (!v) return "Date of birth is required.";
   if (v >= templeToday()) return "Date of birth must be in the past.";
-  const ageYears = ageOnDate(v);
+  const ageYears = ageOnDate(v, sessionStart);
   if (ageYears === null) return "Please enter a valid date.";
-  if (ageYears < minimumAge) return `Student must be at least ${minimumAge} years old for the selected course${minimumAge === 1 ? "" : "s"}.`;
+  if (ageYears < minimumAge) {
+    return minimumAge === MIN_AGE
+      ? `Student must be at least ${MIN_AGE} years old on the session start date (${formatIsoDate(sessionStart)}).`
+      : `Student must be at least ${minimumAge} years old on the session start date for the selected course(s).`;
+  }
   if (ageYears > MAX_AGE) return `Please check the date of birth — the student appears to be over ${MAX_AGE} years old.`;
   return "";
 }
@@ -159,7 +173,7 @@ type Meta         = { nextCode: string; courses: MetaCourse[] };
 
 function minimumAgeForCourse(course: MetaCourse | undefined): number {
   const match = course?.ageGroup?.match(/\b(\d+)\s*(?:\+|(?:-|–|to)\s*\d+)/i);
-  return match ? Number(match[1]) : DEFAULT_MIN_AGE;
+  return Math.max(MIN_AGE, match ? Number(match[1]) : MIN_AGE);
 }
 
 type FoundMember  = {
@@ -173,6 +187,7 @@ type FoundMember  = {
   address: string | null;
   membershipYear: number | null;
   createdAt: string;
+  validationStatus?: string | null;
   memFeeStatus: string | null;
   memFeePaid: number;
   memFeeDue: number;
@@ -182,6 +197,7 @@ type LinkedStudent = {
   id: number;
   studentCode: string;
   name: string;
+  primaryMemberRole?: string | null;
   dob: string | null;
   grade: string | null;
   curriculumYear: string | null;
@@ -263,13 +279,20 @@ function CurrentRegistrationCard({
         <div>
           <p className="text-sm font-bold text-secondary">{summary.studentName}'s current registration</p>
           <p className="text-xs text-muted-foreground">
-            {summary.dateSource === "first_enrollment" ? "First recorded enrollment date" : "Registered"} {registeredDate}{summary.curriculumYear ? ` · ${summary.curriculumYear}` : ""}
+            {summary.dateSource === "first_enrollment" ? "First recorded enrollment date" : "Registration date"}: {registeredDate}{summary.curriculumYear ? ` · ${summary.curriculumYear}` : ""}
           </p>
         </div>
         <button type="button" onClick={onChangeSelection} className="text-xs font-medium text-blue-700 hover:underline">
           Choose another student
         </button>
       </div>
+      {readOnly && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+          {summary.studentName} is already registered for the {summary.curriculumYear ?? "current"} curriculum year, so no new
+          registration can be created. The subjects below are read-only. Any subject changes must be requested through the
+          Gurukul Administration.
+        </p>
+      )}
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Current subjects</p>
         {summary.subjects.length === 0 ? (
@@ -345,11 +368,9 @@ function EmployerSelect({
 // ─── Main Form Component ──────────────────────────────────────────────────────
 
 export type RegistrationPaymentInfo = {
-  courseCount:    number;
-  membershipFee:  number;  // in dollars
-  courseFee:      number;  // per course in dollars
-  memberId?:      number;  // resolved member id for post-payment recording
-  isNewMember:    boolean; // true if this was a brand-new temple member
+  memberId?:   number;                      // resolved member id for the payment step
+  isNewMember: boolean;                     // true if this was a brand-new temple member
+  balance:     RegistrationBalance | null;  // server-computed outstanding fees
 };
 
 type Props = {
@@ -364,8 +385,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [meta, setMeta]       = useState<Meta | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ── Phase control: "member-check" → "form" ──
-  const [phase, setPhase] = useState<"member-check" | "form" | "existing-editor" | "existing-done">("member-check");
+  // ── Phase control ──
+  // member-check → form (student details → course selection). "already-registered" shows a
+  // current-year registration read-only. "existing-editor"/"existing-done" are admin-only
+  // subject changes; parents cannot change subjects after submission.
+  const [phase, setPhase] = useState<"member-check" | "form" | "existing-editor" | "existing-done" | "already-registered">("member-check");
 
   // ── Phase 1: Member check ──
   const [isExistingMember, setIsExistingMember] = useState<boolean | null>(null);
@@ -396,6 +420,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [editorSubjects, setEditorSubjects] = useState<ExistingSubjectDraft[]>([]);
   const [editorSaving, setEditorSaving] = useState(false);
   const [editorError, setEditorError] = useState("");
+  // Student step: details are validated (age + duplicate checks) before course selection opens.
+  const [detailsConfirmed, setDetailsConfirmed] = useState(false);
+  const [checkingDetails, setCheckingDetails] = useState(false);
+  const [matchedStudentCode, setMatchedStudentCode] = useState<string | null>(null);
+  const [matchedStudentNotice, setMatchedStudentNotice] = useState("");
+  const [alreadyRegistered, setAlreadyRegistered] = useState<CurrentRegistrationSummary | null>(null);
+  const [advanceRenewal, setAdvanceRenewal] = useState(false);
   const lookupSequence = useRef(0);
   const registrationSequence = useRef(0);
 
@@ -407,10 +438,12 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [addressSaveError, setAddressSaveError] = useState("");
 
   // New member fields (if not existing)
-  const [memberName,  setMemberName]  = useState("");
+  const [memberFirstName, setMemberFirstName] = useState("");
+  const [memberLastName,  setMemberLastName]  = useState("");
   const [memberEmail, setMemberEmail] = useState("");
   const [memberPhone, setMemberPhone] = useState("");
   const [memberEmployer, setMemberEmployer] = useState("");
+  const [memberEmployerOther, setMemberEmployerOther] = useState("");
   const [p1Errors,    setP1Errors]    = useState<Errors>({});
   const [contactEmailError, setContactEmailError] = useState("");
   const [advancingMember, setAdvancingMember] = useState(false);
@@ -424,8 +457,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     if (!foundMember) return;
     setRenewingMember(true);
     try {
-      const renewed = await adminApi.members.renew(foundMember.id);
-      setFoundMember({ ...foundMember, createdAt: renewed.createdAt });
+      const renewed = await adminApi.members.renew(foundMember.id) as { createdAt: string; membershipYear?: number | null };
+      setFoundMember({ ...foundMember, createdAt: renewed.createdAt, membershipYear: renewed.membershipYear ?? foundMember.membershipYear });
       setRenewalAlreadyApplied(true);
       setMembershipConfirmed(true);
       setMembershipRenewalOpted(true);
@@ -464,6 +497,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   // ── Registration window (loaded from /api/settings) ──────────────────────────
   const [registrationOpen, setRegistrationOpen] = useState<boolean | null>(null);
   const [registrationSettingsError, setRegistrationSettingsError] = useState("");
+  const [sessionStartDate, setSessionStartDate] = useState("");
 
   const [motherName,          setMotherName]          = useState("");
   const [motherPhone,         setMotherPhone]         = useState("");
@@ -486,21 +520,26 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [policyAgreed, setPolicyAgreed] = useState(false);
 
   // ── Fee settings (loaded from portal settings) ──
-  const [membershipFee, setMembershipFee] = useState(150);
-  const [courseFee,     setCourseFee]     = useState(35);
+  // Fees come only from administrator configuration; null means not configured.
+  const [membershipFee, setMembershipFee] = useState<number | null>(null);
+  const [courseFee,     setCourseFee]     = useState<number | null>(null);
+  const [registrationOpenDate,  setRegistrationOpenDate]  = useState("");
+  const [registrationCloseDate, setRegistrationCloseDate] = useState("");
 
   const [enrollments, setEnrollments] = useState<EnrollmentDraft[]>([
-    { key: 0, courseId: "", levelId: "", sectionId: "", amountDue: "35.00" },
+    { key: 0, courseId: "", levelId: "", sectionId: "", amountDue: "" },
   ]);
   const [draftKey, setDraftKey] = useState(1);
+  // Admin registrations fall back to today if the Session Start Date is not configured.
+  const ageReferenceDate = sessionStartDate || templeToday();
   const courseMinimumAge = Math.max(
-    DEFAULT_MIN_AGE,
+    MIN_AGE,
     ...enrollments
       .filter(enrollment => enrollment.courseId)
       .map(enrollment => minimumAgeForCourse(meta?.courses.find(course => course.id === enrollment.courseId))),
   );
-  const dateMax = dateYearsAgo(courseMinimumAge);
-  const dateMin = dateYearsAgo(MAX_AGE);
+  const dateMax = dateYearsBefore(ageReferenceDate, courseMinimumAge);
+  const dateMin = dateYearsBefore(ageReferenceDate, MAX_AGE);
 
   useEffect(() => {
     adminApi.students.meta()
@@ -516,19 +555,19 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         return r.json();
       })
       .then((s: Record<string, string>) => {
-        const mf = parseFloat(s.stripe_membership_fee ?? "150");
-        const cf = parseFloat(s.stripe_course_fee ?? "35");
-        if (!isNaN(mf) && mf > 0) {
-          setMembershipFee(mf);
-        }
-        if (!isNaN(cf) && cf > 0) {
-          setCourseFee(cf);
-          setEnrollments(prev => prev.map(e => ({ ...e, amountDue: cf.toFixed(2) })));
-        }
+        const toFee = (value: string | undefined) =>
+          value?.trim() && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+        const mf = toFee(s.stripe_membership_fee);
+        const cf = toFee(s.stripe_course_fee);
+        setMembershipFee(mf);
+        setCourseFee(cf);
+        if (cf !== null) setEnrollments(prev => prev.map(e => ({ ...e, amountDue: cf.toFixed(2) })));
         // ── Registration window ──
         const rcy = s.registration_curriculum_year?.trim() || "";
         const rod = s.registration_open_date  || "";
         const rcd = s.registration_close_date || "";
+        setRegistrationOpenDate(rod);
+        setRegistrationCloseDate(rcd);
         if (!rcy) {
           setRegistrationSettingsError("The registration curriculum year is not configured in Settings.");
           setRegistrationOpen(false);
@@ -536,6 +575,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         }
         // Always default to the active curriculum year from settings
         setCurricYear(rcy);
+        const ssd = s.session_start_date?.trim() || "";
+        setSessionStartDate(/^\d{4}-\d{2}-\d{2}$/.test(ssd) ? ssd : "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(ssd) && !adminMode) {
+          setRegistrationSettingsError("The session start date is not configured in Settings. Please contact the administration for assistance.");
+          setRegistrationOpen(false);
+          return;
+        }
         // Compute whether window is open
         if (rod && rcd) {
           const today = templeToday();
@@ -551,27 +597,22 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   }, []); // adminMode is a stable prop — safe with empty deps
 
   // Active existing members need no acknowledgment; new members must explicitly agree.
+  // membershipRenewalOpted means this registration includes the current year's membership fee
+  // (new members, or expired members who renewed); advanceRenewal adds next year's fee.
   useEffect(() => {
     if (isExistingMember === false) {
       setMembershipRenewalOpted(true); // new members always pay membership fee
       return;
     }
-    if (isExistingMember === true && foundMember) {
-      const isActive = membershipStatus(foundMember.createdAt).isActive;
-      if (isActive) {
-        setMembershipConfirmed(true);
-        // If membership fee is already paid for the current year, disable renewal opt-in
-        if (foundMember.memFeeStatus === "Paid") {
-          setMembershipRenewalOpted(false);
-        }
-        // Otherwise renewal is optional — keep whatever the checkbox says (default false)
-      } else {
-        // Expired members: renewal is mandatory once they click the renew button (set via handleRenewMember)
-      }
+    if (isExistingMember === true && foundMember &&
+        membershipStatus(foundMember.createdAt, undefined, foundMember.membershipYear).isActive) {
+      setMembershipConfirmed(true);
     }
   }, [foundMember, isExistingMember]);
 
   // ── Computed employer values (resolve "Other" to custom text) ──
+  const effectiveMemberEmployer = memberEmployer === "Other (please specify)"
+    ? memberEmployerOther.trim() : memberEmployer;
   const enteredMotherEmployer = motherEmployer === "Other (please specify)"
     ? motherEmployerOther.trim() : motherEmployer;
   const enteredFatherEmployer = fatherEmployer === "Other (please specify)"
@@ -587,7 +628,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
 
   // ── Enrollment helpers ──
   function addEnrollment() {
-    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "", sectionId: "", amountDue: courseFee.toFixed(2) }]);
+    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "", sectionId: "", amountDue: courseFee !== null ? courseFee.toFixed(2) : "" }]);
     setDraftKey(k => k + 1);
   }
   function removeEnrollment(key: number) {
@@ -603,7 +644,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       // When the course changes, auto-set amountDue from the course's own fee (or global fallback)
       if (patch.courseId !== undefined && patch.amountDue === undefined) {
         const course = meta?.courses.find(c => c.id === patch.courseId);
-        patch = { ...patch, amountDue: course?.fee != null ? course.fee.toFixed(2) : courseFee.toFixed(2) };
+        patch = { ...patch, amountDue: course?.fee != null ? course.fee.toFixed(2) : courseFee !== null ? courseFee.toFixed(2) : "" };
       }
       if (e.key !== key) return e;
       const updated = { ...e, ...patch };
@@ -614,62 +655,139 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   }
 
   // ── Blur handlers (Phase 2) ──
+  // The Primary Member's details are required; the other parent's are optional but must be valid if entered.
   const blurField = useCallback((field: string, value: string) => {
+    const parent = field.startsWith("mother") ? "mother" : field.startsWith("father") ? "father" : null;
+    const optionalParent = parent !== null && primaryMemberRole !== parent;
+    const label = parent === "mother" ? "Mother's name" : "Father's name";
     let msg = "";
     switch (field) {
       case "firstName":         msg = validatePersonName(value, "First name"); break;
       case "lastName":          msg = validatePersonName(value, "Last name"); break;
-      case "dob":               msg = validateDob(value, courseMinimumAge); break;
+      case "dob":               msg = validateDob(value, courseMinimumAge, ageReferenceDate); break;
       case "grade":             msg = value ? "" : "Please select a grade."; break;
       case "curricYear":        msg = value ? "" : "Please select a curriculum year."; break;
-      case "motherName":        msg = validatePersonName(value, "Mother's name"); break;
-      case "motherPhone":       msg = validatePhone(value); break;
-      case "motherEmail":       msg = validateEmail(value); break;
-      case "motherEmployer":    msg = value ? "" : "Please select an employer."; break;
-      case "motherEmployerOther": msg = value.trim() ? "" : "Please specify your employer."; break;
-      case "fatherName":        msg = validatePersonName(value, "Father's name"); break;
-      case "fatherPhone":       msg = validatePhone(value); break;
-      case "fatherEmail":       msg = validateEmail(value); break;
-      case "fatherEmployer":    msg = value ? "" : "Please select an employer."; break;
+      case "motherName":
+      case "fatherName":        msg = optionalParent && !value.trim() ? "" : validatePersonName(value, label); break;
+      case "motherPhone":
+      case "fatherPhone":       msg = _validateUSPhone(value, !optionalParent); break;
+      case "motherEmail":
+      case "fatherEmail":       msg = _validateEmail(value, !optionalParent); break;
+      case "motherEmployer":
+      case "fatherEmployer":    msg = value || optionalParent ? "" : "Please select an employer."; break;
+      case "motherEmployerOther":
       case "fatherEmployerOther": msg = value.trim() ? "" : "Please specify your employer."; break;
       case "address":           msg = validateAddress(value); break;
       case "volunteerArea":     msg = value.trim() ? "" : "Please describe the volunteer area."; break;
     }
     setErrors(prev => ({ ...prev, [field]: msg }));
-  }, [courseMinimumAge]);
+  }, [courseMinimumAge, ageReferenceDate, primaryMemberRole]);
+
+  function parentErrors(
+    role: PrimaryMemberRole,
+    details: { name: string; phone: string; email: string; employer: string },
+    employerChoice: string,
+    employerOther: string,
+  ): Errors {
+    const isPrimary = primaryMemberRole === role;
+    const label = role === "mother" ? "Mother's name" : "Father's name";
+    const employerOtherError = (!isPrimary || !primaryMember?.employer) &&
+      employerChoice === "Other (please specify)" && !employerOther.trim()
+      ? "Please specify your employer." : "";
+    if (!isPrimary) {
+      const entered = [details.name, details.phone, details.email, details.employer].some(value => value.trim());
+      return {
+        [`${role}Name`]: entered ? validatePersonName(details.name, label) : "",
+        [`${role}Phone`]: _validateUSPhone(details.phone, false),
+        [`${role}Email`]: _validateEmail(details.email, false),
+        [`${role}Employer`]: "",
+        [`${role}EmployerOther`]: employerOtherError,
+      };
+    }
+    return {
+      [`${role}Name`]: validatePersonName(details.name, label),
+      [`${role}Phone`]: validatePhone(details.phone),
+      [`${role}Email`]: validateEmail(details.email),
+      [`${role}Employer`]: details.employer ? "" : "Please select an employer.",
+      [`${role}EmployerOther`]: employerOtherError,
+    };
+  }
+
+  // Student details must pass before course selection opens.
+  function detailErrors(minimumAge: number): Errors {
+    return {
+      primaryMemberRole: primaryMemberRole ? "" : "Choose the mother or father who is the Primary Member.",
+      firstName:         validatePersonName(firstName, "First name"),
+      lastName:          validatePersonName(lastName, "Last name"),
+      dob:               validateDob(dob, minimumAge, ageReferenceDate),
+      grade:             grade ? "" : "Please select a grade.",
+      curricYear:        curricYear ? "" : "The curriculum year is not configured. Please contact the administration.",
+      ...parentErrors("mother", registrationMother, motherEmployer, motherEmployerOther),
+      ...parentErrors("father", registrationFather, fatherEmployer, fatherEmployerOther),
+      address:           validateAddress(address),
+      volunteerArea:     volunteerParent && !volunteerArea.trim()
+        ? "Please describe the volunteer area." : "",
+    };
+  }
 
   // ── Phase 2: Validate all fields ──
   function validateAll(): boolean {
     const e: Errors = {
-      primaryMemberRole: primaryMemberRole ? "" : "Choose the mother or father who is the Primary Member.",
-      firstName:         validatePersonName(firstName, "First name"),
-      lastName:          validatePersonName(lastName, "Last name"),
-      dob:               validateDob(dob, courseMinimumAge),
-      grade:             grade ? "" : "Please select a grade.",
-      curricYear:        curricYear ? "" : "Please select a curriculum year.",
-      motherName:        validatePersonName(registrationMother.name, "Mother's name"),
-      motherPhone:       validatePhone(registrationMother.phone),
-      motherEmail:       validateEmail(registrationMother.email),
-      motherEmployer:    effectiveMotherEmployer ? "" : "Please select an employer.",
-      motherEmployerOther: (primaryMemberRole !== "mother" || !primaryMember?.employer) && motherEmployer === "Other (please specify)" && !motherEmployerOther.trim()
-        ? "Please specify your employer." : "",
-      fatherName:        validatePersonName(registrationFather.name, "Father's name"),
-      fatherPhone:       validatePhone(registrationFather.phone),
-      fatherEmail:       validateEmail(registrationFather.email),
-      fatherEmployer:    effectiveFatherEmployer ? "" : "Please select an employer.",
-      fatherEmployerOther: (primaryMemberRole !== "father" || !primaryMember?.employer) && fatherEmployer === "Other (please specify)" && !fatherEmployerOther.trim()
-        ? "Please specify your employer." : "",
-      address:           validateAddress(address),
-      volunteerArea:     volunteerParent && !volunteerArea.trim()
-        ? "Please describe the volunteer area." : "",
-      policyAgreed:      policyAgreed ? "" : "Please read and agree to the Temple policies before submitting.",
+      ...detailErrors(courseMinimumAge),
+      policyAgreed:      policyAgreed ? "" : "Please read and agree to the Gurukul policies before submitting.",
     };
+    const chosenCourses = new Set<number>();
     enrollments.forEach(enrollment => {
       if (!enrollment.courseId) e[`course-${enrollment.key}`] = "Please select a course.";
+      else if (chosenCourses.has(enrollment.courseId)) e[`course-${enrollment.key}`] = "This course is already selected. A course can be selected only once.";
       else if (!enrollment.levelId) e[`level-${enrollment.key}`] = "Please select a level.";
+      if (enrollment.courseId) chosenCourses.add(enrollment.courseId);
     });
+    if (!enrollments.length) e.enrollments = "Select at least one course.";
     setErrors(e);
     return !Object.values(e).some(Boolean);
+  }
+
+  // ── Student details → course selection: age, duplicate student and duplicate registration checks ──
+  async function continueToCourses() {
+    const e = detailErrors(MIN_AGE);
+    setErrors(e);
+    if (Object.values(e).some(Boolean)) {
+      focusFirstFieldError();
+      return;
+    }
+    const memberId = resolvedMemberId;
+    if (!memberId) {
+      toast.error("Confirm the member record on the previous screen before continuing.");
+      setPhase("member-check");
+      return;
+    }
+    setCheckingDetails(true);
+    try {
+      if (selectedExistingStudent) {
+        // Chosen from the member's linked students and already checked for a current registration.
+        setMatchedStudentCode(selectedExistingStudent.studentCode);
+        setMatchedStudentNotice("");
+      } else {
+        const result = await adminApi.students.checkDuplicate({
+          memberId, firstName: firstName.trim(), lastName: lastName.trim(), dob,
+        });
+        if (result.currentRegistration) {
+          setAlreadyRegistered(result.currentRegistration);
+          setPhase("already-registered");
+          return;
+        }
+        setMatchedStudentCode(result.student?.studentCode ?? null);
+        setMatchedStudentNotice(result.student
+          ? `${result.student.name} is already on file under your membership (${result.student.studentCode}). This registration will be added to that student record instead of creating a new one.`
+          : "");
+      }
+      setDetailsConfirmed(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not check for an existing student record. Please try again.");
+    } finally {
+      setCheckingDetails(false);
+    }
   }
 
   // ── Phase 1: Lookup ──
@@ -705,10 +823,12 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setAddressSaveError("");
     setAddressParts({ ...EMPTY_ADDRESS });
     setAddressPartsErrors({});
-    setMemberName("");
+    setMemberFirstName("");
+    setMemberLastName("");
     setMemberEmail("");
     setMemberPhone("");
     setMemberEmployer("");
+    setMemberEmployerOther("");
     setP1Errors({});
     setMembershipConfirmed(false);
     setMembershipError("");
@@ -734,6 +854,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setPolicyAgreed(false);
     setIsNew(true);
     setErrors({});
+    setDetailsConfirmed(false);
+    setMatchedStudentCode(null);
+    setMatchedStudentNotice("");
+    setAlreadyRegistered(null);
+    setAdvanceRenewal(false);
   }
 
   function changeVerifiedContacts() {
@@ -769,7 +894,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         setNeedsExistingIdentifier(err instanceof Error && err.message.includes("More than one"));
         setLookupError(err instanceof Error ? err.message : "Enter your registered last name or Member ID.");
       } else if (errorStatus(err) === 404) {
-        setLookupError("We couldn't find a membership associated with this mobile number. Please check the number and try again. If you're a new member, select New Member to continue.");
+        setLookupError("We couldn't find a membership associated with this mobile number. Please verify the number and try again, select New Member if you are not yet a BHT member, or contact the Temple administrator at gurukul@bhtohio.org.");
       } else {
         setLookupError(err instanceof Error ? err.message : "Could not check this mobile number.");
       }
@@ -805,8 +930,15 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       });
       setMaskedEmail(result.maskedEmail);
       setPublicStep("otp");
-    } catch {
-      setPhoneVerificationError("We could not verify the information provided. Please check your email address and phone number and try again. If you need help, contact the temple office at gurukul@bhtohio.org.");
+    } catch (err) {
+      if (!isExistingMember && errorStatus(err) === 409 && err instanceof Error) {
+        // New member: the phone or email already exists in the BHT database.
+        setPhoneVerificationError(err.message);
+      } else if (errorStatus(err) === 429 && err instanceof Error) {
+        setPhoneVerificationError(err.message);
+      } else {
+        setPhoneVerificationError("We could not send a verification code. Please check your email address and phone number and try again. If you need help, contact the Temple administrator at gurukul@bhtohio.org.");
+      }
     } finally {
       setLookupLoading(false);
     }
@@ -852,7 +984,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       await showVerifiedExistingMember(member, "", sequence);
     } catch {
       if (sequence === lookupSequence.current) {
-        setPhoneVerificationError("We could not verify the information provided. Please check your email address and phone number and try again. If you need help, contact the temple office at gurukul@bhtohio.org.");
+        setPhoneVerificationError("The verification code is incorrect or has expired. Enter the code again or select Resend code to get a new one.");
       }
     } finally {
       if (sequence === lookupSequence.current) setAccessLoading(false);
@@ -932,9 +1064,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setEditingAddress(false);
     setAddressSaveError("");
     setSavedNewMember(null);
-    setMemberName("");
+    setMemberFirstName("");
+    setMemberLastName("");
     setMemberEmail("");
     setMemberEmployer("");
+    setMemberEmployerOther("");
     setP1Errors({});
     setMembershipRenewalOpted(false);
     setMembershipConfirmed(false);
@@ -1084,9 +1218,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setLastName(nameParts.slice(1).join(" ") ?? "");
     setDob(s.dob ?? "");
     setGrade(s.grade ?? "");
-    // In admin mode use the student's existing year; in public mode keep the admin-controlled year
-    // A returning student's previous registration year must not replace the
-    // current year configured for this registration.
+    // The curriculum year is not copied: a returning student is registered for the
+    // administrator-configured current year, never their previous year.
     // Mother
     setMotherName(s.motherName ?? "");
     setMotherPhone(formatUSPhone(s.motherPhone ?? ""));
@@ -1119,17 +1252,33 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
 
   // ── Derived: membership active state (shared across handlers and render) ──
   const memberIsActive = foundMember
-    ? membershipStatus(foundMember.createdAt).isActive
+    ? membershipStatus(foundMember.createdAt, undefined, foundMember.membershipYear).isActive
     : false;
   const memberExpiry = foundMember
-    ? membershipExpiryLabel(foundMember.createdAt)
+    ? membershipExpiryLabel(foundMember.createdAt, foundMember.membershipYear)
     : null;
+  const currentTempleYear = templeYear();
+  // The verified member is the same parent on every student already linked to them.
+  const recordedRoles = new Set(linkedStudents.map(student => student.primaryMemberRole).filter(
+    (role): role is PrimaryMemberRole => role === "mother" || role === "father"));
+  const recordedPrimaryRole: PrimaryMemberRole | null = isExistingMember === true && recordedRoles.size === 1
+    ? [...recordedRoles][0] : null;
+  // Advance renewal is offered to active members whose membership is not already extended.
+  const canRenewInAdvance = isExistingMember === true && !!foundMember && memberIsActive && membershipFee !== null &&
+    membershipEndYear(new Date(foundMember.createdAt), foundMember.membershipYear) <= currentTempleYear;
+  const memberValidated = isExistingMember === true && foundMember?.validationStatus?.trim().toLowerCase() === "validated";
+  // Membership fee lines for this registration, by membership year.
+  const membershipFeeYears = [
+    ...(membershipRenewalOpted && !(isExistingMember === true && foundMember?.memFeeStatus === "Paid") ? [currentTempleYear] : []),
+    ...(advanceRenewal && canRenewInAdvance ? [currentTempleYear + 1] : []),
+  ];
 
   async function createRegistrationMember(details: {
-    name: string; email: string; phone: string; address: string; employer: string;
+    firstName: string; lastName: string; email: string; phone: string; address: string; employer: string;
   }) {
     return adminApi.members.create({
-      name: details.name,
+      firstName: details.firstName,
+      lastName: details.lastName,
       email: details.email || null,
       phone: details.phone || null,
       employer: details.employer || null,
@@ -1157,6 +1306,10 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         return;
       }
       if (selectedExistingStudent && currentRegistration) {
+        if (!adminMode) {
+          setRegistrationError(`${selectedExistingStudent.name} is already registered for this curriculum year. Choose another student or Add New Student.`);
+          return;
+        }
         if (!existingAction) {
           setMemberChoiceError("Choose one of the actions for this student's current registration.");
           return;
@@ -1194,23 +1347,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         focusFirstFieldError();
         return;
       }
-      // If active member opted for renewal, call the API now before advancing
-      if (memberIsActive && membershipRenewalOpted && !renewalAlreadyApplied) {
-        setRenewingMember(true);
-        try {
-          const renewed = await adminApi.members.renew(foundMember.id);
-          setFoundMember({ ...foundMember, createdAt: renewed.createdAt });
-          setRenewalAlreadyApplied(true);
-        } catch (err) {
-          toast.error((err as Error).message ?? "Renewal failed");
-          setRenewingMember(false);
-          return;
-        }
-        setRenewingMember(false);
-      }
       setResolvedMemberId(foundMember.id);
       setMemberContextToken(foundMember.memberContextToken);
     } else {
+      if (membershipFee === null) {
+        setMembershipError("The annual membership fee has not been configured. Please contact the Temple administration.");
+        return;
+      }
       // Creation now happens on Continue, so never create a member for a closed
       // public registration window where the student cannot be submitted.
       if (!adminMode && registrationOpen !== true) {
@@ -1220,11 +1363,16 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       }
       const fieldErrors = validateAddressParts(addressParts);
       setAddressPartsErrors(fieldErrors);
-      const nameErr = validatePersonName(memberName, "Member name");
+      const firstNameErr = validatePersonName(memberFirstName, "First name");
+      const lastNameErr = validatePersonName(memberLastName, "Last name");
       const emailErr = validateEmail(memberEmail);
       const verifiedMemberPhone = adminMode ? memberPhone : formatUSPhone(phoneVerified);
       const phoneErr = validatePhone(verifiedMemberPhone);
-      const newErrors: Errors = { memberName: nameErr, memberEmail: emailErr, memberPhone: phoneErr };
+      const employerErr = !memberEmployer
+        ? "Please select an employer."
+        : memberEmployer === "Other (please specify)" && !memberEmployerOther.trim()
+          ? "Please specify your employer." : "";
+      const newErrors: Errors = { memberFirstName: firstNameErr, memberLastName: lastNameErr, memberEmail: emailErr, memberPhone: phoneErr, memberEmployer: employerErr };
       setP1Errors(newErrors);
       setMembershipError(membershipConfirmed ? "" : "Please acknowledge the annual membership fee to continue.");
       if (Object.values(newErrors).some(Boolean) || Object.keys(fieldErrors).length || !membershipConfirmed) {
@@ -1259,11 +1407,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       setP1Errors({});
       const formattedAddress = formatAddressParts(addressParts);
       const details = {
-        name: memberName.trim(),
+        firstName: memberFirstName.trim(),
+        lastName: memberLastName.trim(),
+        name: `${memberFirstName.trim()} ${memberLastName.trim()}`,
         email: memberEmail.trim(),
         phone: verifiedMemberPhone.replace(/\D/g, ""),
         address: formattedAddress,
-        employer: memberEmployer.trim(),
+        employer: effectiveMemberEmployer,
       };
       advanceInFlight.current = true;
       setAdvancingMember(true);
@@ -1297,12 +1447,20 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       }
     }
     setMembershipError("");
+    setDetailsConfirmed(false);
+    setMatchedStudentCode(null);
+    setMatchedStudentNotice("");
+    if (recordedPrimaryRole) setPrimaryMemberRole(recordedPrimaryRole);
     setPhase("form");
   }
 
   // ── Phase 2: Submit ──
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!detailsConfirmed) {
+      void continueToCourses();
+      return;
+    }
 
     if (!addressConfirmed || !address.trim()) {
       setAddressSaveError("Please confirm or enter your address before registering.");
@@ -1325,15 +1483,18 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
 
       if (!isExistingMember) {
         const details = {
-          name: memberName.trim(),
+          firstName: memberFirstName.trim(),
+          lastName: memberLastName.trim(),
+          name: `${memberFirstName.trim()} ${memberLastName.trim()}`,
           email: memberEmail.trim(),
           phone: (adminMode ? memberPhone : phoneVerified).replace(/\D/g, ""),
           address: address.trim(),
-          employer: memberEmployer.trim(),
+          employer: effectiveMemberEmployer,
         };
         if (!savedNewMember) {
           const memberErrors: Errors = {
-            memberName: validatePersonName(memberName, "Member name"),
+            memberFirstName: validatePersonName(memberFirstName, "First name"),
+            memberLastName: validatePersonName(memberLastName, "Last name"),
             memberEmail: validateEmail(details.email),
             memberPhone: validatePhone(details.phone),
           };
@@ -1369,9 +1530,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       // Compute the membership fee decision for audit / record-keeping
       const membershipFeeDecision = !isExistingMember
         ? "New Member"
-        : membershipRenewalOpted
+        : renewalAlreadyApplied
           ? "Existing Member Renewal — Membership Fee Required"
-          : "Existing Active Member — Membership Fee Not Required";
+          : advanceRenewal && canRenewInAdvance
+            ? "Existing Active Member — Advance Renewal for Next Year"
+            : "Existing Active Member — Membership Fee Not Required";
 
       const result = await adminApi.students.register({
         firstName:          firstName.trim(),
@@ -1396,38 +1559,22 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         address:        address.trim(),
         volunteerParent,
         volunteerArea:  volunteerParent ? volunteerArea.trim() : undefined,
+        studentCode:    matchedStudentCode ?? undefined,
+        advanceMembershipRenewal: advanceRenewal && canRenewInAdvance,
+        policyAccepted: policyAgreed,
         enrollments:    validEnrollments.map(e => ({
           courseLevelId: Number(e.levelId),
           sectionId:     e.sectionId ? Number(e.sectionId) : null,
-          amountDue:     e.amountDue || courseFee.toFixed(2),
-          enrollDate:    new Date().toISOString().slice(0, 10),
+          // Fees are set by the administrator; only an admin may override the amount.
+          ...(adminMode && e.amountDue ? { amountDue: e.amountDue } : {}),
+          enrollDate:    templeToday(),
         })),
       });
 
-      // Auto-create a pending membership fee record (admin mode only, when renewal is opted in)
-      if (adminMode && memberId && membershipRenewalOpted) {
-        try {
-          await adminApi.members.upsertMembershipPayment(memberId, {
-            membershipYear: templeYear(),
-            amountDue:      membershipFee,
-            amountPaid:     0,
-            paymentStatus:  "Pending",
-            paymentMethod:  null,
-            receiptId:      null,
-            paymentDate:    null,
-            notes:          "Auto-created during student registration — update via Members page",
-          });
-        } catch {
-          toast.warning("Student registered. Could not auto-create membership fee record — update manually via Members page.");
-        }
-      }
-
       onSuccess(result.studentCode, `${firstName.trim()} ${lastName.trim()}`, {
-        courseCount:   validEnrollments.length,
-        membershipFee: membershipRenewalOpted ? membershipFee : 0,
-        courseFee:     courseFee,
-        memberId:      memberId ?? undefined,
-        isNewMember:   isExistingMember === false,
+        memberId:    memberId ?? undefined,
+        isNewMember: result.isNewMember || isExistingMember === false,
+        balance:     result.balance,
       });
     } catch (err: unknown) {
       if (publicMemberCreationCollision) {
@@ -1435,18 +1582,20 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         setPhase("member-check");
         return;
       }
-      if (errorStatus(err) === 409 && foundMember && accessStage === "verified") {
-        const fullName = `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").toLocaleLowerCase();
-        const matchingStudent = linkedStudents.find(student =>
-          student.name.trim().replace(/\s+/g, " ").toLocaleLowerCase() === fullName &&
-          student.dob === dob,
-        );
-        if (matchingStudent) {
-          setPhase("member-check");
-          await selectLinkedStudent(matchingStudent);
-          setRegistrationError("A student with this name and date of birth is already linked to your member account. Review the current registration below instead of registering again.");
-          return;
-        }
+      // One registration per student per curriculum year: show the existing one instead.
+      if (errorStatus(err) === 409 && err instanceof Error && err.message === "current-session-exists" && resolvedMemberId) {
+        try {
+          const existing = await adminApi.students.checkDuplicate({
+            memberId: resolvedMemberId, firstName: firstName.trim(), lastName: lastName.trim(), dob,
+          });
+          if (existing.currentRegistration) {
+            setAlreadyRegistered(existing.currentRegistration);
+            setPhase("already-registered");
+            return;
+          }
+        } catch { /* fall through to the generic message */ }
+        toast.error("This student is already registered for the current curriculum year.");
+        return;
       }
       toast.error(err instanceof Error ? err.message : "Registration failed. Please try again.");
     } finally {
@@ -1473,6 +1622,46 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     );
   }
 
+  if (phase === "already-registered" && alreadyRegistered) {
+    return (
+      <div className="space-y-5">
+        <SectionLabel icon={<BookOpen className="w-4 h-4" />} title="Already Registered" />
+        <CurrentRegistrationCard
+          summary={alreadyRegistered}
+          selectedAction={null}
+          onSelectAction={() => undefined}
+          onChangeSelection={() => {
+            setAlreadyRegistered(null);
+            setSelectedExistingStudent(null);
+            setCurrentRegistration(null);
+            setPrefillSource(null);
+            setPhase("member-check");
+          }}
+          readOnly
+        />
+        <p className="text-sm text-muted-foreground">
+          Contact the Gurukul Administration at{" "}
+          <a href="mailto:gurukul@bhtohio.org" className="text-primary underline">gurukul@bhtohio.org</a> to request subject changes.
+        </p>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => { setAlreadyRegistered(null); setDetailsConfirmed(false); setPhase("form"); }}>
+            Edit student details
+          </Button>
+          <Button type="button" onClick={() => {
+            setAlreadyRegistered(null);
+            setSelectedExistingStudent(null);
+            setCurrentRegistration(null);
+            setPrefillSource(null);
+            setPhase("member-check");
+          }}>
+            Register a different student
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Admin-only: change an existing registration's subjects (parents never reach this phase).
   if (phase === "existing-editor" && currentRegistration) {
     const activeCourseSet = activeCourseIds();
     const selectableCourses = meta?.courses.filter(course =>
@@ -1589,11 +1778,31 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   }
 
   if (!adminMode && phase === "member-check" && publicStep !== "verified") {
+    if (publicStep === "choice" && registrationOpen === false) {
+      const today = templeToday();
+      const reason = registrationSettingsError
+        || (registrationOpenDate && today < registrationOpenDate
+          ? `Registration for the ${curricYear} curriculum year opens on ${formatIsoDate(registrationOpenDate)}.`
+          : registrationCloseDate && today > registrationCloseDate
+            ? `Registration for the ${curricYear} curriculum year closed on ${formatIsoDate(registrationCloseDate)}.`
+            : "Registration is currently closed.");
+      return (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4" role="alert">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+          <div>
+            <p className="text-sm font-semibold text-red-800">{reason}</p>
+            {!/contact/i.test(reason) && (
+              <p className="mt-0.5 text-sm text-red-700">Please contact the Gurukul Administration at gurukul@bhtohio.org for assistance.</p>
+            )}
+          </div>
+        </div>
+      );
+    }
     if (publicStep === "choice") {
       return (
         <div className="space-y-5">
           <div>
-            <p className="text-sm font-semibold text-secondary mb-3">Are you an existing Bhartiya Hindu Temple member?</p>
+            <p className="text-sm font-semibold text-secondary mb-3">Are you an Existing BHT Member or a New Member?</p>
             <div className="flex gap-3">
               {([true, false] as const).map(value => (
                 <button
@@ -1610,13 +1819,20 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                     isExistingMember === value ? "border-primary bg-primary/5 text-secondary" : "border-border bg-white text-secondary hover:border-primary"
                   }`}
                 >
-                  {value ? "Yes, I am a member" : "No, I am new"}
+                  {value ? "Existing BHT Member" : "New Member"}
                 </button>
               ))}
             </div>
             {memberChoiceError && <FieldError msg={memberChoiceError} />}
+            {registrationSettingsError && <FieldError msg={registrationSettingsError} />}
           </div>
-          <Field label="Mobile Phone Number" required error={lookupError}>
+          {/* Contact fields appear only after the parent chooses Existing or New Member. */}
+          {isExistingMember !== null && <>
+          <Field
+            label={isExistingMember ? "Mobile phone number registered with your BHT membership" : "Mobile Phone Number"}
+            required
+            error={lookupError}
+          >
             <input
               type="tel"
               value={lookupValue}
@@ -1639,7 +1855,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               />
             </Field>
           )}
-          {!isExistingMember && <Field label="Email Address" required error={contactEmailError}>
+          {isExistingMember === false && <Field label="Email Address" required error={contactEmailError}>
             <input
               type="email"
               value={contactEmail}
@@ -1652,8 +1868,9 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           </Field>}
           {phoneVerificationError && <p className="text-sm text-amber-900" role="alert">{phoneVerificationError}</p>}
           <Button type="button" onClick={() => void (isExistingMember ? checkExistingEmail() : requestEmailCode())} disabled={lookupLoading} className="w-full gap-2">
-            {lookupLoading && <Loader2 className="h-4 w-4 animate-spin" />} {isExistingMember ? "Find membership" : "Continue with email verification"}
+            {lookupLoading && <Loader2 className="h-4 w-4 animate-spin" />} {isExistingMember ? "Find My Membership" : "Continue with Member Verification"}
           </Button>
+          </>}
         </div>
       );
     }
@@ -1661,11 +1878,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       return (
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-secondary">Verification Required</h3>
-          <p className="text-sm text-muted-foreground">We found a membership associated with this mobile number. A verification code will be sent to:</p>
+          <p className="text-sm text-muted-foreground">We found a membership associated with this mobile number. A verification code will be sent to the email address registered with the membership:</p>
           <p className="font-semibold text-secondary">{maskedEmail}</p>
           {phoneVerificationError && <p className="text-sm text-red-700" role="alert">{phoneVerificationError}</p>}
           <Button type="button" onClick={() => void requestEmailCode()} disabled={lookupLoading} className="w-full gap-2">
-            {lookupLoading && <Loader2 className="h-4 w-4 animate-spin" />} Send Verification Code
+            {lookupLoading && <Loader2 className="h-4 w-4 animate-spin" />} Continue with Member Verification
           </Button>
           <button type="button" className="text-sm text-primary underline" onClick={changeVerifiedContacts}>Change mobile number</button>
           <a className="block text-sm text-primary underline" href="mailto:gurukul@bhtohio.org?subject=Membership%20email%20update">I no longer have access to this email</a>
@@ -1954,8 +2171,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                 {!linkedLoading && linkedStudents.length > 0 && (
                   <>
                     <p className="text-sm text-blue-700">
-                      We found {linkedStudents.length} student{linkedStudents.length > 1 ? "s" : ""} linked to your account.
-                      Select a student to pre-fill the registration form, or register a new child.
+                      We found {linkedStudents.length} student{linkedStudents.length > 1 ? "s" : ""} linked to your membership.
+                      Select a student to register them for the {curricYear || "current"} curriculum year, or choose Add New Student.
                     </p>
                     <div className="space-y-2">
                       {linkedStudents.map(s => (
@@ -1981,22 +2198,17 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                               ? "bg-primary text-white"
                               : "bg-blue-100 text-blue-700"
                           }`}>
-                            {selectedExistingStudent?.id === s.id ? "Selected ✓" : "Pre-fill Form"}
+                            {selectedExistingStudent?.id === s.id ? "Selected ✓" : "Select"}
                           </span>
                         </button>
                       ))}
                     </div>
-                    {selectedExistingStudent && (
-                      <p className="text-xs text-blue-600 italic">
-                        {selectedExistingStudent.name}'s details are selected. Check below for the current registration before continuing.
-                      </p>
-                    )}
                     {selectedExistingStudent && registrationLoading && (
                       <p className="flex items-center gap-2 text-sm text-blue-700"><Loader2 className="w-4 h-4 animate-spin" /> Loading current registration…</p>
                     )}
                     {registrationError && <p className="text-sm text-red-700" role="alert">{registrationError}</p>}
                     {selectedExistingStudent && !registrationLoading && !currentRegistration && !registrationError && (
-                      <p className="text-sm text-blue-700">No current registration was found for this student. Continue to start a registration.</p>
+                      <p className="text-sm text-blue-700">{selectedExistingStudent.name} is not yet registered for the {curricYear || "current"} curriculum year. Continue to register.</p>
                     )}
                     {currentRegistration && !registrationLoading && (
                       <CurrentRegistrationCard
@@ -2004,6 +2216,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                         selectedAction={existingAction}
                         onSelectAction={action => { setExistingAction(action); setMemberChoiceError(""); setEditorError(""); }}
                         onChangeSelection={() => { setSelectedExistingStudent(null); setCurrentRegistration(null); setPrefillSource(null); setExistingAction(null); setRegistrationError(""); }}
+                        readOnly={!adminMode}
                       />
                     )}
                     <div className="pt-1 border-t border-blue-200">
@@ -2017,7 +2230,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                         }`}
                       >
                         <UserPlus className="w-4 h-4" />
-                        Register a new child / start fresh
+                        Add New Student
                         {prefillSource === null && <span className="text-xs ml-1 bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Selected</span>}
                       </button>
                     </div>
@@ -2025,7 +2238,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                 )}
                 {!linkedLoading && linkedStudents.length === 0 && (
                   <p className="text-sm text-blue-700">
-                    You'll fill in all details on the next screen.
+                    Continue to add a new student. You'll enter the student's details on the next screen.
                   </p>
                 )}
               </div>
@@ -2045,17 +2258,32 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             <p className="text-sm text-orange-700">
               Continuing will save your temple member record before student registration. A valid email address is required.
             </p>
-            <Field label="Your Name" required error={p1Errors.memberName}>
-              <input
-                value={memberName}
-                onChange={e => { setMemberName(e.target.value); setP1Errors(prev => ({ ...prev, memberName: "" })); }}
-                onBlur={() => setP1Errors(prev => ({ ...prev, memberName: validatePersonName(memberName, "Member name") }))}
-                placeholder="Full name of primary contact"
-                className={`${inputCls} ${p1Errors.memberName ? "border-red-400" : ""}`}
-                aria-invalid={!!p1Errors.memberName}
-                data-field-error={p1Errors.memberName ? "true" : undefined}
-              />
-            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="First Name" required error={p1Errors.memberFirstName}>
+                <input
+                  value={memberFirstName}
+                  onChange={e => { setMemberFirstName(e.target.value); setP1Errors(prev => ({ ...prev, memberFirstName: "" })); }}
+                  onBlur={() => setP1Errors(prev => ({ ...prev, memberFirstName: validatePersonName(memberFirstName, "First name") }))}
+                  placeholder="e.g. Anita"
+                  autoComplete="given-name"
+                  className={`${inputCls} ${p1Errors.memberFirstName ? "border-red-400" : ""}`}
+                  aria-invalid={!!p1Errors.memberFirstName}
+                  data-field-error={p1Errors.memberFirstName ? "true" : undefined}
+                />
+              </Field>
+              <Field label="Last Name" required error={p1Errors.memberLastName}>
+                <input
+                  value={memberLastName}
+                  onChange={e => { setMemberLastName(e.target.value); setP1Errors(prev => ({ ...prev, memberLastName: "" })); }}
+                  onBlur={() => setP1Errors(prev => ({ ...prev, memberLastName: validatePersonName(memberLastName, "Last name") }))}
+                  placeholder="e.g. Sharma"
+                  autoComplete="family-name"
+                  className={`${inputCls} ${p1Errors.memberLastName ? "border-red-400" : ""}`}
+                  aria-invalid={!!p1Errors.memberLastName}
+                  data-field-error={p1Errors.memberLastName ? "true" : undefined}
+                />
+              </Field>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Email Address" required error={p1Errors.memberEmail}>
                 <input
@@ -2085,13 +2313,17 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                 />
               </Field>
             </div>
-            <Field label="Employer (if available)">
-              <input
-                value={memberEmployer}
-                onChange={e => setMemberEmployer(e.target.value)}
-                placeholder="Employer"
-                className={inputCls}
-              />
+            <Field label="Employer" required>
+              <div data-field-error={p1Errors.memberEmployer ? "true" : undefined} tabIndex={p1Errors.memberEmployer ? -1 : undefined}>
+                <EmployerSelect
+                  value={memberEmployer}
+                  otherValue={memberEmployerOther}
+                  onChange={v => { setMemberEmployer(v); setP1Errors(prev => ({ ...prev, memberEmployer: "" })); }}
+                  onOtherChange={v => { setMemberEmployerOther(v); setP1Errors(prev => ({ ...prev, memberEmployer: "" })); }}
+                  error={p1Errors.memberEmployer}
+                  cls={`${inputCls} ${p1Errors.memberEmployer ? "border-red-400" : ""}`}
+                />
+              </div>
             </Field>
             <div className="pt-2 border-t border-orange-200 space-y-2">
               <p className="text-xs font-bold text-orange-800 uppercase tracking-wide">Complete home address</p>
@@ -2140,26 +2372,25 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   </div>
                 )}
 
-                {/* Renewal opt-in — shown only when fee is NOT yet paid for current year */}
-                {memberIsActive && foundMember?.memFeeStatus !== "Paid" && (
+                {/* Optional advance renewal for next year — active members only */}
+                {canRenewInAdvance && (
                   <label className={`flex items-start gap-3 cursor-pointer rounded-xl border-2 p-3 transition-colors select-none ${
-                    membershipRenewalOpted
+                    advanceRenewal
                       ? "border-primary bg-primary/5"
                       : "border-border bg-white hover:border-primary/40"
                   }`}>
                     <input
                       type="checkbox"
-                      checked={membershipRenewalOpted}
-                      onChange={e => setMembershipRenewalOpted(e.target.checked)}
+                      checked={advanceRenewal}
+                      onChange={e => setAdvanceRenewal(e.target.checked)}
                       className="mt-0.5 w-4 h-4 accent-primary shrink-0"
                     />
                     <div>
                       <p className="text-sm font-semibold text-secondary">
-                        Yes, renew my membership for ${membershipFee}/year
+                        Optional: pay the {currentTempleYear + 1} membership fee (${membershipFee}) in advance
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                         Membership is valid through December 31 of this calendar year and adds ${membershipFee} to the total fee.
-                        Leave unchecked to skip renewal this time.
+                        Once paid, your membership is extended through December 31, {currentTempleYear + 1}. Leave unchecked to renew later.
                       </p>
                     </div>
                   </label>
@@ -2192,10 +2423,16 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               </div>
             )}
 
-            <p className="text-sm text-amber-800">
-              Temple annual membership is <strong>${membershipFee} per year</strong> and must be active to register
-              students in Gurukul. Membership fees help support temple operations, events, and programs.
-            </p>
+            {isExistingMember === true && membershipFee !== null && (
+              <p className="text-sm text-amber-800">
+                Membership is <strong>${membershipFee}/year</strong> and always ends on <strong>December 31</strong>.
+              </p>
+            )}
+            {isExistingMember === false && membershipFee === null && (
+              <p className="text-sm text-red-700" role="alert">
+                The annual membership fee has not been configured yet, so new memberships cannot be created online. Please contact the Temple administration.
+              </p>
+            )}
 
             {/* New members must explicitly acknowledge the annual fee. */}
             {isExistingMember === false && (
@@ -2215,10 +2452,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   className="mt-0.5 w-4 h-4 accent-primary shrink-0"
                 />
                 <span className="text-sm text-secondary leading-relaxed">
-                  I understand that I will be enrolling as a new temple member and agree to pay the{" "}
-                  <strong>${membershipFee} annual membership fee for {templeYear()}</strong> as part of this
-                  student registration.{" "}
-                  <span className="text-xs text-muted-foreground font-normal">(Required for all new members)</span>
+                  I agree to pay the <strong>${membershipFee} membership fee for {templeYear()}</strong> (valid through
+                  December 31) and all course fees at the <strong>Temple Administration Desk</strong>.
                 </span>
               </label>
             )}
@@ -2277,13 +2512,14 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         <div className="flex items-start gap-3 p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm">
           <RefreshCw className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
           <div>
-            <span className="font-semibold text-blue-800">Form pre-filled from {prefillSource.name}'s record.</span>
-            <span className="text-blue-700"> Review and update any fields, then choose courses and submit.</span>
+            <span className="font-semibold text-blue-800">Registering {prefillSource.name} ({prefillSource.studentCode}).</span>
+            <span className="text-blue-700"> Review the details below, then continue to course selection.</span>
           </div>
-          <button type="button" onClick={() => setPrefillSource(null)} className="ml-auto text-blue-500 hover:text-blue-700 text-xs shrink-0">Clear</button>
         </div>
       )}
 
+      {/* Student details are locked once they pass the age and duplicate checks. */}
+      <fieldset disabled={detailsConfirmed} className="space-y-8 min-w-0">
       {/* ── Section 1: Student Info ── */}
       <div>
         <SectionLabel icon={<GraduationCap className="w-4 h-4" />} title="Student Information" />
@@ -2291,6 +2527,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           <Field label="First Name" required error={errors.firstName}>
             <input
               value={firstName}
+              readOnly={!!selectedExistingStudent}
               onChange={e => setFirstName(e.target.value)}
               onBlur={() => blurField("firstName", firstName)}
               placeholder="e.g. Arjun"
@@ -2301,6 +2538,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           <Field label="Last Name" required error={errors.lastName}>
             <input
               value={lastName}
+              readOnly={!!selectedExistingStudent}
               onChange={e => setLastName(e.target.value)}
               onBlur={() => blurField("lastName", lastName)}
               placeholder="e.g. Sharma"
@@ -2308,12 +2546,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               data-field-error={errors.lastName ? "true" : undefined}
             />
           </Field>
-          <Field label="Date of Birth" required error={errors.dob} hint={`Student must be ${courseMinimumAge}–${MAX_AGE} years old for the selected course${courseMinimumAge === 1 ? "" : "s"}`}>
+          <Field label="Date of Birth" required error={errors.dob} hint={`at least ${courseMinimumAge} years old on ${formatIsoDate(ageReferenceDate)}`}>
             <input
               type="date"
               value={dob}
               min={dateMin}
               max={dateMax}
+              readOnly={!!selectedExistingStudent}
               onChange={e => setDob(e.target.value)}
               onBlur={() => blurField("dob", dob)}
               className={inputClsFor("dob")}
@@ -2343,6 +2582,14 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               title="Curriculum year is set by the administration in Settings and cannot be changed here."
             />
           </Field>
+          <Field label="Session Start Date" hint="set by administration">
+            <input
+              type="text"
+              value={sessionStartDate ? formatIsoDate(sessionStartDate) : "Not configured"}
+              readOnly
+              className={`${inputCls} bg-gray-50 text-muted-foreground cursor-not-allowed`}
+            />
+          </Field>
         </div>
       </div>
 
@@ -2363,14 +2610,21 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             </p>
             <div className="flex flex-wrap gap-3">
               {(["mother", "father"] as const).map(role => (
-                <label key={role} className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm cursor-pointer ${primaryMemberRole === role ? "border-primary bg-white text-primary font-semibold" : "border-border bg-white text-secondary"}`}>
+                <label key={role} className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm ${recordedPrimaryRole && recordedPrimaryRole !== role ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${primaryMemberRole === role ? "border-primary bg-white text-primary font-semibold" : "border-border bg-white text-secondary"}`}>
                   <input type="radio" name="primary-member-role" value={role} checked={primaryMemberRole === role}
+                    disabled={!!recordedPrimaryRole && recordedPrimaryRole !== role}
                     onChange={() => { setPrimaryMemberRole(role); setErrors(prev => ({ ...prev, primaryMemberRole: "" })); }}
                     className="accent-primary" />
                   {role === "mother" ? "Mother" : "Father"}
                 </label>
               ))}
             </div>
+            {recordedPrimaryRole && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Your membership is recorded as the {recordedPrimaryRole === "mother" ? "Mother" : "Father"} on your other students.
+                Contact the Gurukul Administration if this is incorrect.
+              </p>
+            )}
             <FieldError msg={errors.primaryMemberRole} />
           </fieldset>
 
@@ -2378,13 +2632,16 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           <div className="p-4 rounded-xl bg-pink-50 border border-pink-100 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold text-pink-700 uppercase tracking-wide">Mother</p>
+              {primaryMemberRole && primaryMemberRole !== "mother" && (
+                <span className="text-xs text-muted-foreground">Optional — enter manually if you'd like it on file</span>
+              )}
               {primaryMemberRole === "mother" && primaryMember && (
                 <span className="text-xs font-semibold rounded-full bg-green-100 border border-green-200 text-green-800 px-2.5 py-1">
                   Primary Member · {primaryMember.memberCode || `Member #${primaryMember.id}`}
                 </span>
               )}
             </div>
-            <Field label="Full Name" required error={errors.motherName}>
+            <Field label="Full Name" required={primaryMemberRole === "mother"} error={errors.motherName}>
               <input
                 value={registrationMother.name}
                 onChange={e => setMotherName(e.target.value)}
@@ -2396,7 +2653,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               />
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Phone" required error={errors.motherPhone}>
+              <Field label="Phone" required={primaryMemberRole === "mother"} error={errors.motherPhone}>
                 <input
                   type="tel"
                   value={formatUSPhone(registrationMother.phone)}
@@ -2409,7 +2666,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   data-field-error={errors.motherPhone ? "true" : undefined}
                 />
               </Field>
-              <Field label="Email" required error={errors.motherEmail}>
+              <Field label="Email" required={primaryMemberRole === "mother"} error={errors.motherEmail}>
                 <input
                   type="email"
                   value={registrationMother.email}
@@ -2424,7 +2681,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             </div>
             <Field
               label="Where do you work?"
-              required
+              required={primaryMemberRole === "mother"}
               error={errors.motherEmployer || errors.motherEmployerOther}
             >
               {primaryMemberRole === "mother" && primaryMember?.employer ? (
@@ -2446,13 +2703,16 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold text-blue-700 uppercase tracking-wide">Father</p>
+              {primaryMemberRole && primaryMemberRole !== "father" && (
+                <span className="text-xs text-muted-foreground">Optional — enter manually if you'd like it on file</span>
+              )}
               {primaryMemberRole === "father" && primaryMember && (
                 <span className="text-xs font-semibold rounded-full bg-green-100 border border-green-200 text-green-800 px-2.5 py-1">
                   Primary Member · {primaryMember.memberCode || `Member #${primaryMember.id}`}
                 </span>
               )}
             </div>
-            <Field label="Full Name" required error={errors.fatherName}>
+            <Field label="Full Name" required={primaryMemberRole === "father"} error={errors.fatherName}>
               <input
                 value={registrationFather.name}
                 onChange={e => setFatherName(e.target.value)}
@@ -2464,7 +2724,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               />
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Phone" required error={errors.fatherPhone}>
+              <Field label="Phone" required={primaryMemberRole === "father"} error={errors.fatherPhone}>
                 <input
                   type="tel"
                   value={formatUSPhone(registrationFather.phone)}
@@ -2477,7 +2737,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   data-field-error={errors.fatherPhone ? "true" : undefined}
                 />
               </Field>
-              <Field label="Email" required error={errors.fatherEmail}>
+              <Field label="Email" required={primaryMemberRole === "father"} error={errors.fatherEmail}>
                 <input
                   type="email"
                   value={registrationFather.email}
@@ -2492,7 +2752,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             </div>
             <Field
               label="Where do you work?"
-              required
+              required={primaryMemberRole === "father"}
               error={errors.fatherEmployer || errors.fatherEmployerOther}
             >
               {primaryMemberRole === "father" && primaryMember?.employer ? (
@@ -2554,17 +2814,46 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         </div>
       </div>
 
+      </fieldset>
+
+      {!detailsConfirmed ? (
+        <div className="flex flex-wrap gap-3 justify-end pt-2">
+          <Button type="button" variant="outline" onClick={() => setPhase("member-check")} disabled={checkingDetails}>
+            Back
+          </Button>
+          <Button type="button" onClick={() => void continueToCourses()} disabled={checkingDetails} className="gap-2 min-w-48">
+            {checkingDetails
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Checking student…</>
+              : <>Continue to Course Selection <ChevronRight className="w-4 h-4" /></>}
+          </Button>
+        </div>
+      ) : (<>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
+        <p className="text-sm text-green-900 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          Student details checked: age eligible and not yet registered for {curricYear}.
+        </p>
+        <Button type="button" variant="outline" size="sm" onClick={() => { setDetailsConfirmed(false); setMatchedStudentNotice(""); }} disabled={saving}>
+          Edit student details
+        </Button>
+      </div>
+      {matchedStudentNotice && (
+        <p className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" role="status">{matchedStudentNotice}</p>
+      )}
+
       {/* ── Section 3: Enrollments ── */}
       <div>
-        <SectionLabel icon={<BookOpen className="w-4 h-4" />} title="Course Enrollment" />
+        <SectionLabel icon={<BookOpen className="w-4 h-4" />} title="Course Selection" />
         <p className="text-sm text-muted-foreground mb-4">
-          Select the course(s) you would like to enroll your child in. You may add multiple courses below.
+          Select one or more courses. Each course can be selected only once for this student and curriculum year.
         </p>
 
         <div className="space-y-3">
           {enrollments.map((enr, idx) => {
             const selectedCourse = meta?.courses.find(c => c.id === enr.courseId) ?? null;
             const selectedLevel  = selectedCourse?.levels.find(l => l.id === enr.levelId) ?? null;
+            // A course already chosen in another row cannot be chosen again.
+            const takenCourseIds = new Set(enrollments.filter(other => other.key !== enr.key && other.courseId).map(other => other.courseId));
 
             return (
               <div key={enr.key} className="p-4 rounded-xl border border-border bg-gray-50 space-y-3">
@@ -2577,13 +2866,14 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                       type="button"
                       onClick={() => removeEnrollment(enr.key)}
                       className="text-red-400 hover:text-red-600 transition-colors"
+                      aria-label={`Remove course ${idx + 1}`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
 
-                  <Field label="Course" required error={errors[`course-${enr.key}`]}>
+                <Field label="Course" required error={errors[`course-${enr.key}`]}>
                   <select
                     required
                     value={enr.courseId}
@@ -2593,19 +2883,20 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                     data-field-error={errors[`course-${enr.key}`] ? "true" : undefined}
                   >
                     <option value="">— Select a course —</option>
-                    {meta?.courses.map(c => (
-                      <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+                    {meta?.courses.filter(c => !takenCourseIds.has(c.id)).map(c => (
+                      // A course without an administrator-configured fee cannot be selected publicly.
+                      <option key={c.id} value={c.id} disabled={!adminMode && c.fee == null}>
+                        {c.icon} {c.name} — {c.fee != null ? `$${c.fee.toFixed(2)}` : "fee not configured"}
+                      </option>
                     ))}
                   </select>
                   {selectedCourse && (
                     <p className="mt-1.5 text-xs text-muted-foreground">
-                      Registration fee:{" "}
+                      Course registration fee:{" "}
                       <span className="font-semibold text-secondary">
-                        ${selectedCourse.fee != null ? selectedCourse.fee.toFixed(2) : courseFee.toFixed(2)}
+                        {selectedCourse.fee != null ? `$${selectedCourse.fee.toFixed(2)}` : "not configured — enter the amount below"}
                       </span>
-                      {selectedCourse.fee != null && (
-                        <span className="ml-1.5 text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">course-specific</span>
-                      )}
+                      <span className="ml-1.5">· Minimum age {minimumAgeForCourse(selectedCourse)} on the session start date</span>
                     </p>
                   )}
                 </Field>
@@ -2666,70 +2957,79 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               </div>
             );
           })}
+          {errors.enrollments && <FieldError msg={errors.enrollments} />}
+          {errors.dob && <FieldError msg={errors.dob} />}
 
-          <button
-            type="button"
-            onClick={addEnrollment}
-            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-primary/30 text-primary text-sm font-semibold hover:border-primary/60 hover:bg-primary/5 transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Add Another Course
-          </button>
+          {(meta?.courses.length ?? 0) > enrollments.length && (
+            <button
+              type="button"
+              onClick={addEnrollment}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-primary/30 text-primary text-sm font-semibold hover:border-primary/60 hover:bg-primary/5 transition-colors"
+            >
+              <Plus className="w-4 h-4" /> Add Another Course
+            </button>
+          )}
         </div>
       </div>
 
-
       {/* ── Fee Summary ── */}
-      {enrollments.some(e => e.courseId && e.levelId) && (
-        <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 space-y-2">
-          <div className="flex items-center gap-2 mb-2">
-            <Receipt className="w-4 h-4 text-indigo-700" />
-            <span className="text-sm font-bold text-indigo-900 uppercase tracking-wide">Fee Summary</span>
-          </div>
-          {enrollments.filter(e => e.courseId && e.levelId).map((enr, idx) => {
-            const course = meta?.courses.find(c => c.id === enr.courseId);
-            const feeAmt = adminMode ? (parseFloat(enr.amountDue) || 0) : (course?.fee ?? courseFee);
-            return (
-              <div key={enr.key} className="flex justify-between items-center text-sm">
-                <span className="text-secondary">{course ? `${course.icon} ${course.name}` : `Course ${idx + 1}`} — Registration</span>
-                <span className="font-semibold text-secondary">${feeAmt.toFixed(2)}</span>
+      {(enrollments.some(e => e.courseId && e.levelId) || membershipFeeYears.length > 0) && (() => {
+        const courseLines = enrollments.filter(e => e.courseId && e.levelId).map((enr, idx) => {
+          const course = meta?.courses.find(c => c.id === enr.courseId);
+          return {
+            key: `course-${enr.key}`,
+            label: course ? `${course.icon} ${course.name}` : `Course ${idx + 1}`,
+            amount: adminMode ? (parseFloat(enr.amountDue) || 0) : (course?.fee ?? 0),
+          };
+        });
+        const membershipLines = membershipFeeYears.map(year => ({
+          key: `membership-${year}`,
+          label: `🏛️ Annual Membership (${year}${year > currentTempleYear ? " — paid in advance" : ""})`,
+          amount: membershipFee ?? 0,
+        }));
+        const total = [...courseLines, ...membershipLines].reduce((sum, line) => sum + line.amount, 0);
+        return (
+          <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 space-y-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Receipt className="w-4 h-4 text-indigo-700" />
+              <span className="text-sm font-bold text-indigo-900 uppercase tracking-wide">Fee Summary</span>
+            </div>
+            {courseLines.map(line => (
+              <div key={line.key} className="flex justify-between items-center text-sm">
+                <span className="text-secondary">{line.label} — Course Registration Fee</span>
+                <span className="font-semibold text-secondary">${line.amount.toFixed(2)}</span>
               </div>
-            );
-          })}
-          {membershipRenewalOpted && (
-            <div className="flex justify-between items-center text-sm border-t border-indigo-200 pt-2">
-              <span className="text-secondary">🏛️ Annual Membership ({templeYear()})</span>
-              <span className="font-semibold text-secondary">
-                ${membershipFee.toFixed(2)}
-              </span>
+            ))}
+            {membershipLines.map(line => (
+              <div key={line.key} className="flex justify-between items-center text-sm border-t border-indigo-200 pt-2">
+                <span className="text-secondary">{line.label}</span>
+                <span className="font-semibold text-secondary">${line.amount.toFixed(2)}</span>
+              </div>
+            ))}
+            {isExistingMember === true && memberIsActive && foundMember?.memFeeStatus === "Paid" && (
+              <div className="flex justify-between items-center text-sm border-t border-indigo-200 pt-2">
+                <span className="text-secondary flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  Annual Membership ({currentTempleYear})
+                </span>
+                <span className="font-semibold text-emerald-700">Already Paid ✓</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center pt-2 border-t-2 border-indigo-300">
+              <span className="text-base font-bold text-indigo-900">Total Due</span>
+              <span className="text-xl font-bold text-indigo-900">${total.toFixed(2)}</span>
             </div>
-          )}
-          {isExistingMember === true && memberIsActive && foundMember?.memFeeStatus === "Paid" && (
-            <div className="flex justify-between items-center text-sm border-t border-indigo-200 pt-2">
-              <span className="text-secondary flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                Annual Membership ({templeYear()})
-              </span>
-              <span className="font-semibold text-emerald-700">Already Paid ✓</span>
-            </div>
-          )}
-          <div className="flex justify-between items-center pt-2 border-t-2 border-indigo-300">
-            <span className="text-base font-bold text-indigo-900">Total Due</span>
-            <span className="text-xl font-bold text-indigo-900">
-              ${(
-                enrollments
-                  .filter(e => e.courseId && e.levelId)
-                  .reduce((sum, enr) => {
-                    const course = meta?.courses.find(c => c.id === enr.courseId);
-                    return sum + (adminMode ? (parseFloat(enr.amountDue) || 0) : (course?.fee ?? courseFee));
-                  }, 0) +
-                (membershipRenewalOpted ? membershipFee : 0)
-              ).toFixed(2)}
-            </span>
+            {/* Payment never blocks registration; how it can be paid depends on validation. */}
+            <p className="text-xs text-indigo-900/80 pt-1">
+              {memberValidated
+                ? "No payment needed to submit. You can pay online or at the Temple Administration Desk afterwards."
+                : "No payment needed to submit. Pay at the Temple Administration Desk."}
+            </p>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
-      {/* ── Temple Policies ── */}
+      {/* ── Gurukul Policies ── */}
       <div
         className="p-4 rounded-xl bg-gray-50 border border-border"
         data-field-error={errors.policyAgreed ? "true" : undefined}
@@ -2737,7 +3037,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       >
         <div className="flex items-center gap-2 mb-3">
           <ShieldCheck className="w-4 h-4 text-primary" />
-          <span className="text-sm font-bold text-secondary uppercase tracking-wide">Temple Policies</span>
+          <span className="text-sm font-bold text-secondary uppercase tracking-wide">BHT Gurukul Policies</span>
         </div>
         <label className="flex items-start gap-3 cursor-pointer">
           <input
@@ -2746,14 +3046,16 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             aria-invalid={!!errors.policyAgreed}
             onChange={e => {
               setPolicyAgreed(e.target.checked);
-              setErrors(prev => ({ ...prev, policyAgreed: e.target.checked ? "" : "Please read and agree to the Temple policies before submitting." }));
+              setErrors(prev => ({ ...prev, policyAgreed: e.target.checked ? "" : "Please read and agree to the Gurukul policies before submitting." }));
             }}
             className="mt-0.5 w-4 h-4 accent-primary"
           />
           <span className="text-sm text-secondary leading-relaxed">
             I have read and agree to the{" "}
             <span className="font-semibold text-primary">Bhartiya Hindu Temple Gurukul policies</span>,
-            including attendance requirements, code of conduct, and fee payment terms.
+            including attendance requirements, code of conduct, and fee payment terms. I understand that after
+            submission, subjects cannot be added, removed, or replaced from this site; changes must be requested
+            through the Gurukul Administration.
             <span className="text-red-500 ml-0.5">*</span>
           </span>
         </label>
@@ -2776,7 +3078,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             Registration is currently closed.
           </div>
         ) : (
-          <Button type="submit" disabled={saving || (!adminMode && registrationOpen === null)} className="min-w-36 gap-2">
+          <Button type="submit" disabled={saving || !policyAgreed || (!adminMode && registrationOpen === null)} className="min-w-36 gap-2">
             {saving
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Registering…</>
               : submitLabel
@@ -2784,6 +3086,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           </Button>
         )}
       </div>
+      </>)}
     </form>
   );
 }

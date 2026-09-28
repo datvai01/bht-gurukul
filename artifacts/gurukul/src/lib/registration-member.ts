@@ -1,4 +1,6 @@
 export type RegistrationMemberDetails = {
+  firstName: string;
+  lastName: string;
   name: string;
   email: string;
   phone: string;
@@ -20,7 +22,8 @@ export async function ensureRegistrationMember(
 ): Promise<number> {
   if (saved) {
     if (
-      saved.name !== details.name ||
+      saved.firstName !== details.firstName ||
+      saved.lastName !== details.lastName ||
       saved.email !== details.email ||
       saved.phone !== details.phone ||
       saved.address !== details.address ||
@@ -32,6 +35,8 @@ export async function ensureRegistrationMember(
   }
 
   const created = await create();
-  remember({ ...details, ...created });
+  // Keep the submitted details as the retry baseline; the server's normalized row
+  // (e.g. employer null for a blank entry) must not make an unchanged retry look edited.
+  remember({ ...details, id: created.id, memberCode: created.memberCode, memberContextToken: created.memberContextToken });
   return created.id;
 }

@@ -62,6 +62,10 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    // Local dev: forward /api to the Express server (Replit routes this itself)
+    ...(process.env.API_PROXY_TARGET
+      ? { proxy: { "/api": { target: process.env.API_PROXY_TARGET } } }
+      : {}),
     fs: {
       strict: true,
       deny: ["**/.*"],

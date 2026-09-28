@@ -8,15 +8,15 @@ import {
 } from "@stripe/react-stripe-js";
 import { Button } from "@/components/ui/button";
 import { Loader2, CreditCard, CheckCircle2, AlertCircle, ShieldCheck } from "lucide-react";
+import type { RegistrationBalance } from "@/lib/adminApi";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PaymentFormProps {
   studentCode:   string;
   studentName:   string;
-  courseCount:   number;
-  membershipFee: number;
-  courseFee:     number;
+  // Server-computed outstanding balance; the server charges this amount, never a client total.
+  balance:       RegistrationBalance;
   onPaymentDone: (success: boolean, paymentIntentId?: string) => void;
 }
 
@@ -136,9 +136,7 @@ function CardForm({
 export function StripePaymentForm({
   studentCode,
   studentName,
-  courseCount,
-  membershipFee,
-  courseFee,
+  balance,
   onPaymentDone,
 }: PaymentFormProps) {
   const [stripePromise, setStripePromise] = useState<ReturnType<typeof loadStripe> | null>(null);
@@ -146,8 +144,10 @@ export function StripePaymentForm({
   const [configLoading, setConfigLoading] = useState(true);
   const [notConfigured, setNotConfigured] = useState(false);
 
-  const totalDollars = membershipFee + courseCount * courseFee;
-  const totalCents   = totalDollars * 100;
+  const outstanding  = balance.items.filter(item => item.balance > 0);
+  const totalDollars = balance.total;
+  const totalCents   = Math.round(totalDollars * 100);
+  const courseCount  = outstanding.filter(item => item.kind === "course").length;
   const description  = `Gurukul Registration — ${studentName} — ${courseCount} course(s)`;
 
   useEffect(() => {
@@ -176,16 +176,12 @@ export function StripePaymentForm({
           <h3 className="font-bold text-secondary text-sm">Payment Summary</h3>
         </div>
         <div className="px-5 py-4 space-y-2.5 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Temple Annual Membership</span>
-            <span className="font-medium">${membershipFee.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">
-              Course Enrollment ({courseCount} × ${courseFee})
-            </span>
-            <span className="font-medium">${(courseCount * courseFee).toFixed(2)}</span>
-          </div>
+          {outstanding.map(item => (
+            <div key={`${item.kind}-${item.id}`} className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{item.label}</span>
+              <span className="font-medium">${item.balance.toFixed(2)}</span>
+            </div>
+          ))}
           <div className="border-t border-border pt-2.5 flex justify-between font-bold text-base">
             <span>Total Due</span>
             <span className="text-primary">${totalDollars.toFixed(2)}</span>
