@@ -1596,11 +1596,12 @@ type SortKey = "id" | "name" | "grade" | "primaryCourse" | "totalPaid" | "worstP
 export default function Students() {
   const { user } = useAuth();
   const isAdmin = user ? canAccess(user.role, "dashboard") : false;
-  const { activeYearsListLong, activeCurriculumYearLong } = usePortalSettings();
+  const { activeYearsListLong } = usePortalSettings();
 
   // ── data
   const [rawStudents, setRawStudents] = useState<Student[]>([]);
   const [loading, setLoading]         = useState(true);
+  const [loadError, setLoadError]     = useState<string | null>(null);
 
   // ── search & filters (operate on full dataset)
   const [search,          setSearch]          = useState("");
@@ -1645,8 +1646,10 @@ export default function Students() {
 
   const loadStudents = useCallback(() => {
     setLoading(true);
+    setLoadError(null);
     adminApi.students.list()
       .then((d) => setRawStudents(groupRows(d as RawRow[])))
+      .catch((err) => setLoadError(err instanceof Error ? err.message : "Could not load students."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -1689,7 +1692,6 @@ export default function Students() {
   }
 
   useEffect(() => { loadStudents(); loadUnlinkedCount(); }, [loadStudents, loadUnlinkedCount]);
-  useEffect(() => { if (activeCurriculumYearLong && filterCurricYear === "All") setFilterCurricYear(activeCurriculumYearLong); }, [activeCurriculumYearLong]);
 
   // Keep paymentDrawer in sync with fresh data after a payment update
   useEffect(() => {
@@ -1700,6 +1702,10 @@ export default function Students() {
   }, [rawStudents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── dynamic filter options from data
+  const allYears = useMemo(() => Array.from(new Set([
+    ...activeYearsListLong,
+    ...rawStudents.map(s => s.curriculumYear).filter(Boolean),
+  ])).sort(), [activeYearsListLong, rawStudents]);
   const allCourses  = useMemo(() => ["All", ...Array.from(new Set(rawStudents.flatMap(s => s.courses))).sort()], [rawStudents]);
   const allLevels   = useMemo(() => {
     const nums = Array.from(new Set(rawStudents.flatMap(s => currentEnrollments(s).map(e => e.levelNum)))).filter(Boolean).sort((a,b) => a-b);
@@ -1833,10 +1839,16 @@ export default function Students() {
   const activeFilterCount = [
     filterCourse !== "All", filterLevel !== "All", filterSection !== "All",
     filterPayStatus !== "All", filterActive !== "All",
-    filterCurricYear !== "All" && filterCurricYear !== activeCurriculumYearLong,
+    filterCurricYear !== "All",
   ].filter(Boolean).length;
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>;
+  if (loadError) return (
+    <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
+      Could not load students: {loadError}
+      <Button variant="outline" size="sm" onClick={loadStudents} className="ml-3">Retry</Button>
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-full space-y-3">
@@ -1926,7 +1938,7 @@ export default function Students() {
                 className="text-xs border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-primary bg-white min-w-32"
               >
                 <option value="All">All Years</option>
-                {activeYearsListLong.map(y => <option key={y} value={y}>{y}</option>)}
+                {allYears.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
 
@@ -2000,7 +2012,7 @@ export default function Students() {
           {activeFilterCount > 0 && (
             <div className="pt-1 border-t border-border">
               <button
-                onClick={() => { setFilterCourse("All"); setFilterLevel("All"); setFilterSection("All"); setFilterPayStatus("All"); setFilterActive("All"); setFilterCurricYear(activeCurriculumYearLong || "All"); }}
+                onClick={() => { setFilterCourse("All"); setFilterLevel("All"); setFilterSection("All"); setFilterPayStatus("All"); setFilterActive("All"); setFilterCurricYear("All"); }}
                 className="text-xs text-red-500 hover:text-red-700 font-medium"
               >
                 Clear all filters
@@ -2076,8 +2088,22 @@ export default function Students() {
               {paginated.length === 0 && (
                 <tr>
                   <td colSpan={9} className="text-center py-16 text-muted-foreground text-sm">
-                    No students found.
-                    {isAdmin && <> <button onClick={() => setShowRegister(true)} className="text-primary hover:underline ml-1">Register one?</button></>}
+                    {rawStudents.length > 0 ? (
+                      <>
+                        No students match the selected filters.
+                        <button
+                          onClick={() => { setSearch(""); setFilterCourse("All"); setFilterLevel("All"); setFilterSection("All"); setFilterPayStatus("All"); setFilterActive("All"); setFilterCurricYear("All"); }}
+                          className="text-primary hover:underline ml-1"
+                        >
+                          Show all students
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        No students registered yet.
+                        {isAdmin && <> <button onClick={() => setShowRegister(true)} className="text-primary hover:underline ml-1">Register one?</button></>}
+                      </>
+                    )}
                   </td>
                 </tr>
               )}
