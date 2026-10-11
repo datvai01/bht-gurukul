@@ -4,6 +4,7 @@ import {
   portalSettingsTable,
   paymentsTable,
   membershipPaymentsTable,
+  studentFeesTable,
 } from "@workspace/db/schema";
 import { eq, like, or } from "drizzle-orm";
 import Stripe from "stripe";
@@ -139,8 +140,11 @@ router.post("/record-membership", async (req, res) => {
     // 3. Apply the Stripe-verified amount to outstanding membership years first, then
     //    course fees. An intent is applied once: rows it paid carry its id as receipt.
     const result = await db.transaction(async tx => {
-      const [alreadyApplied] = await tx.select({ id: paymentsTable.id }).from(paymentsTable)
+      const [appliedToCourse] = await tx.select({ id: paymentsTable.id }).from(paymentsTable)
         .where(eq(paymentsTable.receiptId, paymentIntentId)).limit(1);
+      const [appliedToFee] = await tx.select({ id: studentFeesTable.id }).from(studentFeesTable)
+        .where(eq(studentFeesTable.receiptId, paymentIntentId)).limit(1);
+      const alreadyApplied = appliedToCourse ?? appliedToFee;
       const [alreadyAppliedMembership] = await tx.select({ id: membershipPaymentsTable.id })
         .from(membershipPaymentsTable)
         .where(or(
@@ -169,6 +173,8 @@ router.post("/record-membership", async (req, res) => {
         };
         if (item.kind === "course") {
           await tx.update(paymentsTable).set(update).where(eq(paymentsTable.id, item.id));
+        } else if (item.kind === "fee") {
+          await tx.update(studentFeesTable).set(update).where(eq(studentFeesTable.id, item.id));
         } else {
           const [row] = await tx.update(membershipPaymentsTable)
             .set({ ...update, notes: `Verified via Stripe PaymentIntent ${paymentIntentId}` })

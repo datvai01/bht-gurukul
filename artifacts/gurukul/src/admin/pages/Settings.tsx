@@ -121,6 +121,7 @@ export default function Settings() {
   const [stripeSecretConfigured, setStripeSecretConfigured] = useState(false);
   const [stripeMemberFee, setStripeMemberFee] = useState("150");
   const [stripeCourseFee, setStripeCourseFee] = useState("35");
+  const [bagSuppliesFee,  setBagSuppliesFee]  = useState("11");
   const [showSecret,      setShowSecret]      = useState(false);
   const [stripeLoading,   setStripeLoading]   = useState(false);
   const [stripeSaving,    setStripeSaving]    = useState(false);
@@ -273,6 +274,7 @@ export default function Settings() {
         setStripeSecretConfigured(s.stripe_secret_key_configured === "true");
         setStripeMemberFee(s.stripe_membership_fee ?? "150");
         setStripeCourseFee(s.stripe_course_fee ?? "35");
+        setBagSuppliesFee(s.bag_supplies_fee ?? "11");
       })
       .catch(() => setStripeError("Failed to load payment settings."))
       .finally(() => setStripeLoading(false));
@@ -287,6 +289,7 @@ export default function Settings() {
         stripe_publishable_key: stripePubKey.trim(),
         stripe_membership_fee:  stripeMemberFee.trim(),
         stripe_course_fee:      stripeCourseFee.trim(),
+        bag_supplies_fee:       bagSuppliesFee.trim(),
         // The stored secret is never sent to the browser; only send one when the admin typed a new key.
         ...(newSecret ? { stripe_secret_key: newSecret } : {}),
       });
@@ -885,6 +888,19 @@ export default function Settings() {
                       className="rounded-xl"
                     />
                     <p className="text-xs text-muted-foreground">Charged per course enrolled.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Bag &amp; Supplies Fee ($)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={bagSuppliesFee}
+                      onChange={e => setBagSuppliesFee(e.target.value)}
+                      className="rounded-xl"
+                      data-testid="input-bag-supplies-fee"
+                    />
+                    <p className="text-xs text-muted-foreground">Charged once to each new student (default $11.00).</p>
                   </div>
                 </div>
               </div>

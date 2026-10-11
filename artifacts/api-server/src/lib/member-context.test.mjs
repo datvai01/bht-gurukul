@@ -78,40 +78,46 @@ test("new-member token is purpose-bound and expires within the shorter creation 
   assert.equal(verifyMemberContextToken(token, 42, secret, now), false);
 });
 
-test("primary parent uses canonical member contacts and employer", () => {
+test("primary parent keeps the parent's edited details from the registration form", () => {
   const result = resolvePrimaryParentContacts("mother", {
-    motherName: "  Morgan Member ",
-    motherPhone: "(614) 555-0100",
-    motherEmail: "morgan@example.org",
+    motherName: "  Morgan M. Member ",
+    motherPhone: "(614) 555-0101",
+    motherEmail: "Morgan.New@example.org",
     motherEmployer: "Submitted employer",
     fatherName: "Other parent",
-    fatherPhone: "6145550101",
   }, {
     name: "Morgan Member",
     phone: "614-555-0100",
-    email: "MORGAN@example.org",
+    email: "morgan@example.org",
     employer: "Canonical employer",
   });
 
   assert.deepEqual(result, {
     ok: true,
     fields: {
-      motherName: "Morgan Member",
-      motherPhone: "614-555-0100",
-      motherEmail: "MORGAN@example.org",
-      motherEmployer: "Canonical employer",
+      motherName: "Morgan M. Member",
+      motherPhone: "6145550101",
+      motherEmail: "morgan.new@example.org",
+      motherEmployer: "Submitted employer",
     },
   });
 });
 
-test("primary contact rejects unrelated submitted details and permits missing member details", () => {
+test("blank primary fields fall back to the member record; missing member details are allowed", () => {
   assert.deepEqual(
-    resolvePrimaryParentContacts("father", { fatherEmail: "unrelated@example.org" }, {
-      email: "member@example.org",
+    resolvePrimaryParentContacts("father", {}, {
+      name: "Member Name", phone: "(614) 555-0100", email: "member@example.org", employer: "Temple",
     }),
-    { ok: false, field: "email" },
+    {
+      ok: true,
+      fields: {
+        fatherName: "Member Name",
+        fatherPhone: "(614) 555-0100",
+        fatherEmail: "member@example.org",
+        fatherEmployer: "Temple",
+      },
+    },
   );
-
   assert.deepEqual(
     resolvePrimaryParentContacts("father", { fatherName: "Manual parent" }, {}),
     {
@@ -126,25 +132,17 @@ test("primary contact rejects unrelated submitted details and permits missing me
   );
 });
 
-test("primary phone matching uses the shared valid US phone normalization", () => {
+test("edited primary phone and email must be valid", () => {
   assert.deepEqual(
-    resolvePrimaryParentContacts("mother", { motherPhone: "614.555.0100" }, {
-      phone: "(614) 555-0100",
-    }),
-    {
-      ok: true,
-      fields: {
-        motherName: null,
-        motherPhone: "(614) 555-0100",
-        motherEmail: null,
-        motherEmployer: null,
-      },
-    },
+    resolvePrimaryParentContacts("mother", { motherPhone: "1111111111" }, { phone: "614-555-0100" }),
+    { ok: false, field: "phone" },
   );
   assert.deepEqual(
-    resolvePrimaryParentContacts("mother", { motherPhone: "1111111111" }, {
-      phone: "111-111-1111",
-    }),
-    { ok: false, field: "phone" },
+    resolvePrimaryParentContacts("mother", { motherEmail: "not-an-email" }, { email: "member@example.org" }),
+    { ok: false, field: "email" },
+  );
+  assert.equal(
+    resolvePrimaryParentContacts("mother", { motherPhone: "+91 98765 43210" }, {}).ok,
+    true,
   );
 });

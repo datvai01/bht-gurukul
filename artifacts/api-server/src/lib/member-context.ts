@@ -1,10 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 // @ts-expect-error Node's strip-types test runner requires explicit TS extensions.
-import { normalizeUsPhone } from "./member-phone.ts";
+import { normalizeMemberPhone } from "./member-phone.ts";
 
 export const MEMBER_CONTEXT_TOKEN_TTL_SECONDS = 2 * 60 * 60;
-export const NEW_MEMBER_CONTEXT_TOKEN_TTL_SECONDS = 30 * 60;
-export const VERIFIED_MEMBER_CONTEXT_TOKEN_TTL_SECONDS = 15 * 60;
+// A verified registration session lasts 60 minutes, long enough to complete the student form.
+export const NEW_MEMBER_CONTEXT_TOKEN_TTL_SECONDS = 60 * 60;
+export const VERIFIED_MEMBER_CONTEXT_TOKEN_TTL_SECONDS = 60 * 60;
 
 export type MemberContextPurpose = "lookup" | "new-member" | "verified-member";
 
@@ -154,15 +155,13 @@ function clean(value?: string | null): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function matchesCanonical(field: "name" | "phone" | "email", submitted: string, canonical: string): boolean {
-  if (field === "phone") {
-    const submittedPhone = normalizeUsPhone(submitted);
-    const canonicalPhone = normalizeUsPhone(canonical);
-    return submittedPhone !== null && submittedPhone === canonicalPhone;
-  }
-  return submitted.trim().toLocaleLowerCase() === canonical.trim().toLocaleLowerCase();
-}
-
+/**
+ * Resolves the Primary Member's contact fields for a student registration.
+ * Details are pre-filled from the verified member record, and the parent may edit them on
+ * the registration form: a submitted value is used when present (phone and email must be
+ * valid), and a blank field falls back to the member record. The membership record itself
+ * is never changed here.
+ */
 export function resolvePrimaryParentContacts(
   role: PrimaryMemberRole,
   submitted: SubmittedParentContacts,
@@ -183,27 +182,23 @@ export function resolvePrimaryParentContacts(
     employer: clean(member.employer),
   };
 
-  for (const field of ["name", "phone", "email"] as const) {
-    const candidate = submittedForRole[field];
-    const trusted = canonical[field];
-    if (candidate && trusted && !matchesCanonical(field, candidate, trusted)) {
-      return { ok: false, field };
-    }
+  let phone = canonical.phone;
+  if (submittedForRole.phone) {
+    phone = normalizeMemberPhone(submittedForRole.phone);
+    if (!phone) return { ok: false, field: "phone" };
   }
-
-  const resolved = {
-    name: canonical.name ?? submittedForRole.name,
-    phone: canonical.phone ?? submittedForRole.phone,
-    email: canonical.email ?? submittedForRole.email,
-    employer: canonical.employer ?? submittedForRole.employer,
-  };
+  let email = canonical.email;
+  if (submittedForRole.email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(submittedForRole.email)) return { ok: false, field: "email" };
+    email = submittedForRole.email.toLowerCase();
+  }
   return {
     ok: true,
     fields: {
-      [`${role}Name`]: resolved.name,
-      [`${role}Phone`]: resolved.phone,
-      [`${role}Email`]: resolved.email,
-      [`${role}Employer`]: resolved.employer,
+      [`${role}Name`]: submittedForRole.name ?? canonical.name,
+      [`${role}Phone`]: phone,
+      [`${role}Email`]: email,
+      [`${role}Employer`]: submittedForRole.employer ?? canonical.employer,
     },
   };
 }

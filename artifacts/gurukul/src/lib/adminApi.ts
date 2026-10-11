@@ -79,7 +79,8 @@ export type RegistrationBalance = {
 };
 
 export type DuplicateStudentCheck = {
-  student: { studentCode: string; name: string; dob: string | null; grade: string | null } | null;
+  // firstRegistration: no earlier registration or enrollment (a new student pays the Bag & Supplies fee)
+  student: { studentCode: string; name: string; dob: string | null; grade: string | null; firstRegistration: boolean } | null;
   currentRegistration: CurrentRegistrationSummary | null;
 };
 
@@ -134,6 +135,11 @@ export const adminApi = {
     bulkDelete:    (codes: string[]) => request("DELETE", "/students/bulk", { codes }),
     assignSection: (enrollmentId: number, sectionId: number | null) =>
       request("PATCH", `/students/enrollments/${enrollmentId}/section`, { sectionId }),
+    // Record payment of a one-time student fee (e.g. the Bag & Supplies fee).
+    updateStudentFee: (feeId: number, data: {
+      amountDue?: number; amountPaid?: number; paymentStatus?: "Paid" | "Pending" | "Overdue";
+      paymentMethod?: string | null; receiptId?: string | null; paymentDate?: string | null;
+    }) => request("PATCH", `/students/fees/${feeId}`, data),
     updatePayment: (enrollmentId: number, data: {
       amountDue?:     number;
       amountPaid?:    number;

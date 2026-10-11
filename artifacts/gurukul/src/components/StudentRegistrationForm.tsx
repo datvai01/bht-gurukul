@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { adminApi, type CurrentRegistrationSummary, type RegistrationBalance } from "@/lib/adminApi";
 import { membershipEndYear, membershipExpiryLabel, membershipStatus, templeYear } from "@/lib/membership";
 import { ensureRegistrationMember, type SavedRegistrationMember } from "@/lib/registration-member";
-import { resolveParentDetails, type PrimaryMemberRole } from "@/lib/primary-member";
+import { type PrimaryMemberRole } from "@/lib/primary-member";
 import {
   AddressFields, EMPTY_ADDRESS, formatAddressParts, isCompleteAddress, parseAddress, validateAddressParts,
   type AddressErrors, type AddressParts,
@@ -12,6 +12,8 @@ import {
   validateEmail as _validateEmail,
   validatePersonName as _validatePersonName,
   validateAddress as _validateAddress,
+  validateMemberPhone as _validateMemberPhone,
+  formatMemberPhone,
   formatUSPhone,
 } from "@/lib/validators";
 import {
@@ -110,7 +112,7 @@ const EMPLOYERS_LIST = [
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
-function validatePhone(v: string): string { return _validateUSPhone(v, true); }
+function validatePhone(v: string): string { return _validateMemberPhone(v, true); }
 function validateEmail(v: string): string { return _validateEmail(v, true); }
 function validatePersonName(v: string, label: string): string { return _validatePersonName(v, label); }
 
@@ -143,6 +145,12 @@ function errorStatus(error: unknown): number | undefined {
   return error instanceof Error ? (error as Error & { status?: number }).status : undefined;
 }
 
+// The verified registration session (60 minutes) has expired or was lost.
+function isAccessExpired(error: unknown): boolean {
+  const status = errorStatus(error);
+  return status === 401 || (status === 403 && error instanceof Error && /verify member access/i.test(error.message));
+}
+
 function formatRegistrationDate(value: string): string {
   const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const date = dateOnly
@@ -168,7 +176,12 @@ function focusFirstFieldError() {
 
 type MetaSection  = { id: number; sectionName: string; schedule: string };
 type MetaLevel    = { id: number; levelNumber: number; className: string; sections: MetaSection[] };
-export type MetaCourse = { id: number; name: string; icon: string; fee?: number | null; ageGroup?: string | null; levels: MetaLevel[] };
+// schedule: the subject's class timing, set by the administrator and shared by all levels.
+export type MetaCourse = { id: number; name: string; icon: string; fee?: number | null; schedule?: string; ageGroup?: string | null; levels: MetaLevel[] };
+
+function courseTiming(course: MetaCourse | undefined | null): string {
+  return course?.schedule?.trim() || "Timing to be announced";
+}
 type Meta         = { nextCode: string; courses: MetaCourse[] };
 
 function minimumAgeForCourse(course: MetaCourse | undefined): number {
@@ -465,6 +478,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       setMembershipError("");
       toast.success("Membership renewed — you may now continue.");
     } catch (err) {
+      if (isAccessExpired(err) && handleAccessExpired()) return;
       toast.error((err as Error).message ?? "Renewal failed");
     } finally {
       setRenewingMember(false);
@@ -523,6 +537,10 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   // Fees come only from administrator configuration; null means not configured.
   const [membershipFee, setMembershipFee] = useState<number | null>(null);
   const [courseFee,     setCourseFee]     = useState<number | null>(null);
+  // One-time Bag & Supplies fee for new students (administrator setting; $11.00 by default).
+  const [bagSuppliesFee, setBagSuppliesFee] = useState<number | null>(11);
+  // Whether the student is registering with BHT Gurukul for the first time (set by the duplicate check).
+  const [studentIsNew, setStudentIsNew] = useState(true);
   const [registrationOpenDate,  setRegistrationOpenDate]  = useState("");
   const [registrationCloseDate, setRegistrationCloseDate] = useState("");
 
@@ -561,6 +579,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         const cf = toFee(s.stripe_course_fee);
         setMembershipFee(mf);
         setCourseFee(cf);
+        setBagSuppliesFee(s.bag_supplies_fee === undefined ? 11 : toFee(s.bag_supplies_fee));
         if (cf !== null) setEnrollments(prev => prev.map(e => ({ ...e, amountDue: cf.toFixed(2) })));
         // ── Registration window ──
         const rcy = s.registration_curriculum_year?.trim() || "";
@@ -618,13 +637,53 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const enteredFatherEmployer = fatherEmployer === "Other (please specify)"
     ? fatherEmployerOther.trim() : fatherEmployer;
   const primaryMember = isExistingMember ? foundMember : savedNewMember;
-  const { mother: registrationMother, father: registrationFather } = resolveParentDetails(
-    primaryMemberRole, primaryMember,
-    { name: motherName, phone: motherPhone, email: motherEmail, employer: enteredMotherEmployer },
-    { name: fatherName, phone: fatherPhone, email: fatherEmail, employer: enteredFatherEmployer },
-  );
+  // Parent details are the form fields. The Primary Member's fields are pre-filled from the
+  // verified member record (applyPrimaryMember) and remain editable for this registration.
+  const registrationMother = { name: motherName, phone: motherPhone, email: motherEmail, employer: enteredMotherEmployer };
+  const registrationFather = { name: fatherName, phone: fatherPhone, email: fatherEmail, employer: enteredFatherEmployer };
   const effectiveMotherEmployer = registrationMother.employer;
   const effectiveFatherEmployer = registrationFather.employer;
+
+  const parentSetters = {
+    mother: { name: setMotherName, phone: setMotherPhone, email: setMotherEmail, employer: setMotherEmployer, employerOther: setMotherEmployerOther },
+    father: { name: setFatherName, phone: setFatherPhone, email: setFatherEmail, employer: setFatherEmployer, employerOther: setFatherEmployerOther },
+  } as const;
+
+  // Pre-fill the chosen Primary Member from the member record. Only empty fields are filled, so a
+  // returning student's saved details or the parent's own edits are kept. When the parent switches
+  // roles, values copied from the member record are removed from the parent no longer selected.
+  function applyPrimaryMember(role: PrimaryMemberRole, previous: PrimaryMemberRole | null) {
+    if (!primaryMember) return;
+    const memberValues = {
+      name: primaryMember.name?.trim() ?? "",
+      phone: formatMemberPhone(primaryMember.phone ?? ""),
+      email: primaryMember.email?.trim() ?? "",
+    };
+    const current = { mother: registrationMother, father: registrationFather };
+    if (previous && previous !== role) {
+      const same = (field: "name" | "phone" | "email", a: string, b: string) => field === "phone"
+        ? a.replace(/\D/g, "") === b.replace(/\D/g, "")
+        : a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+      for (const field of ["name", "phone", "email"] as const) {
+        if (memberValues[field] && same(field, current[previous][field], memberValues[field])) {
+          parentSetters[previous][field]("");
+        }
+      }
+    }
+    for (const field of ["name", "phone", "email"] as const) {
+      if (memberValues[field] && !current[role][field].trim()) parentSetters[role][field](memberValues[field]);
+    }
+    const employer = primaryMember.employer?.trim();
+    if (employer && !current[role].employer) {
+      if (EMPLOYERS_LIST.includes(employer)) {
+        parentSetters[role].employer(employer);
+        parentSetters[role].employerOther("");
+      } else {
+        parentSetters[role].employer("Other (please specify)");
+        parentSetters[role].employerOther(employer);
+      }
+    }
+  }
 
   // ── Enrollment helpers ──
   function addEnrollment() {
@@ -670,7 +729,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       case "motherName":
       case "fatherName":        msg = optionalParent && !value.trim() ? "" : validatePersonName(value, label); break;
       case "motherPhone":
-      case "fatherPhone":       msg = _validateUSPhone(value, !optionalParent); break;
+      case "fatherPhone":       msg = _validateMemberPhone(value, !optionalParent); break;
       case "motherEmail":
       case "fatherEmail":       msg = _validateEmail(value, !optionalParent); break;
       case "motherEmployer":
@@ -691,14 +750,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   ): Errors {
     const isPrimary = primaryMemberRole === role;
     const label = role === "mother" ? "Mother's name" : "Father's name";
-    const employerOtherError = (!isPrimary || !primaryMember?.employer) &&
-      employerChoice === "Other (please specify)" && !employerOther.trim()
+    const employerOtherError = employerChoice === "Other (please specify)" && !employerOther.trim()
       ? "Please specify your employer." : "";
     if (!isPrimary) {
       const entered = [details.name, details.phone, details.email, details.employer].some(value => value.trim());
       return {
         [`${role}Name`]: entered ? validatePersonName(details.name, label) : "",
-        [`${role}Phone`]: _validateUSPhone(details.phone, false),
+        [`${role}Phone`]: _validateMemberPhone(details.phone, false),
         [`${role}Email`]: _validateEmail(details.email, false),
         [`${role}Employer`]: "",
         [`${role}EmployerOther`]: employerOtherError,
@@ -764,26 +822,28 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     }
     setCheckingDetails(true);
     try {
+      const result = await adminApi.students.checkDuplicate({
+        memberId, firstName: firstName.trim(), lastName: lastName.trim(), dob,
+      });
+      if (result.currentRegistration) {
+        setAlreadyRegistered(result.currentRegistration);
+        setPhase("already-registered");
+        return;
+      }
       if (selectedExistingStudent) {
-        // Chosen from the member's linked students and already checked for a current registration.
+        // Chosen from the member's linked students (name and date of birth are locked).
         setMatchedStudentCode(selectedExistingStudent.studentCode);
         setMatchedStudentNotice("");
       } else {
-        const result = await adminApi.students.checkDuplicate({
-          memberId, firstName: firstName.trim(), lastName: lastName.trim(), dob,
-        });
-        if (result.currentRegistration) {
-          setAlreadyRegistered(result.currentRegistration);
-          setPhase("already-registered");
-          return;
-        }
         setMatchedStudentCode(result.student?.studentCode ?? null);
         setMatchedStudentNotice(result.student
           ? `${result.student.name} is already on file under your membership (${result.student.studentCode}). This registration will be added to that student record instead of creating a new one.`
           : "");
       }
+      setStudentIsNew(result.student ? result.student.firstRegistration : true);
       setDetailsConfirmed(true);
     } catch (err) {
+      if (isAccessExpired(err) && handleAccessExpired()) return;
       toast.error(err instanceof Error ? err.message : "Could not check for an existing student record. Please try again.");
     } finally {
       setCheckingDetails(false);
@@ -859,6 +919,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setMatchedStudentNotice("");
     setAlreadyRegistered(null);
     setAdvanceRenewal(false);
+    setStudentIsNew(true);
   }
 
   function changeVerifiedContacts() {
@@ -873,6 +934,21 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setContactEmailError("");
     setAccessStage("idle");
     setPublicStep("choice");
+  }
+
+  // Session expired: return to email verification with a clear explanation. A new member whose
+  // membership was already saved continues as an existing member.
+  function handleAccessExpired(): boolean {
+    if (adminMode) return false;
+    const savedMember = !!savedNewMember;
+    changeVerifiedContacts();
+    if (savedMember) setIsExistingMember(true);
+    setPhase("member-check");
+    setPhoneVerificationError(savedMember
+      ? "For your security, your verification expired. Your membership was saved — choose Existing BHT Member and verify your email again to continue."
+      : "For your security, your verification expired. Please verify your email again to continue. Student details will need to be re-entered.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return true;
   }
 
   async function checkExistingEmail() {
@@ -1044,6 +1120,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       const students = await adminApi.members.studentsByMember(memberId);
       if (sequence === lookupSequence.current) setLinkedStudents(students);
     } catch (err) {
+      if (sequence === lookupSequence.current && isAccessExpired(err) && handleAccessExpired()) return;
       if (sequence === lookupSequence.current) {
         setLinkedStudents([]);
         setAccessError(err instanceof Error ? err.message : "Could not load linked students.");
@@ -1093,6 +1170,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         .filter(subject => isActiveEnrollmentStatus(subject.status))
         .map(subject => ({ courseLevelId: subject.courseLevelId, sectionId: subject.sectionId })));
     } catch (err) {
+      if (selectionSequence === registrationSequence.current && isAccessExpired(err) && handleAccessExpired()) return;
       if (selectionSequence === registrationSequence.current && errorStatus(err) !== 404) {
         setRegistrationError(err instanceof Error ? err.message : "Could not load the current registration.");
       }
@@ -1203,6 +1281,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       setEditingAddress(false);
       toast.success("Address updated on your member record.");
     } catch (err) {
+      if (sequence === lookupSequence.current && isAccessExpired(err) && handleAccessExpired()) return;
       if (sequence === lookupSequence.current) setAddressSaveError(err instanceof Error ? err.message : "Could not update address.");
     } finally {
       if (sequence === lookupSequence.current) setAddressSaving(false);
@@ -1450,7 +1529,10 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
     setDetailsConfirmed(false);
     setMatchedStudentCode(null);
     setMatchedStudentNotice("");
-    if (recordedPrimaryRole) setPrimaryMemberRole(recordedPrimaryRole);
+    if (recordedPrimaryRole) {
+      setPrimaryMemberRole(recordedPrimaryRole);
+      applyPrimaryMember(recordedPrimaryRole, null);
+    }
     setPhase("form");
   }
 
@@ -1582,6 +1664,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         setPhase("member-check");
         return;
       }
+      if (isAccessExpired(err) && handleAccessExpired()) return;
       // One registration per student per curriculum year: show the existing one instead.
       if (errorStatus(err) === 409 && err instanceof Error && err.message === "current-session-exists" && resolvedMemberId) {
         try {
@@ -2606,14 +2689,18 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               Primary Member <span className="text-red-500">*</span>
             </legend>
             <p className="text-xs text-muted-foreground mb-3">
-              Which parent is the Temple member identified on the previous screen? Their member information will be filled in automatically.
+              Which parent is the Temple member identified on the previous screen? Their member information is filled in automatically, and you can edit it for this registration.
             </p>
             <div className="flex flex-wrap gap-3">
               {(["mother", "father"] as const).map(role => (
                 <label key={role} className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm ${recordedPrimaryRole && recordedPrimaryRole !== role ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${primaryMemberRole === role ? "border-primary bg-white text-primary font-semibold" : "border-border bg-white text-secondary"}`}>
                   <input type="radio" name="primary-member-role" value={role} checked={primaryMemberRole === role}
                     disabled={!!recordedPrimaryRole && recordedPrimaryRole !== role}
-                    onChange={() => { setPrimaryMemberRole(role); setErrors(prev => ({ ...prev, primaryMemberRole: "" })); }}
+                    onChange={() => {
+                      applyPrimaryMember(role, primaryMemberRole);
+                      setPrimaryMemberRole(role);
+                      setErrors(prev => ({ ...prev, primaryMemberRole: "" }));
+                    }}
                     className="accent-primary" />
                   {role === "mother" ? "Mother" : "Father"}
                 </label>
@@ -2646,8 +2733,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                 value={registrationMother.name}
                 onChange={e => setMotherName(e.target.value)}
                 onBlur={() => blurField("motherName", registrationMother.name)}
-                readOnly={primaryMemberRole === "mother" && !!primaryMember?.name}
-                placeholder="Mother's full name"
+                                placeholder="Mother's full name"
                 className={inputClsFor("motherName")}
                 data-field-error={errors.motherName ? "true" : undefined}
               />
@@ -2656,12 +2742,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               <Field label="Phone" required={primaryMemberRole === "mother"} error={errors.motherPhone}>
                 <input
                   type="tel"
-                  value={formatUSPhone(registrationMother.phone)}
-                  onChange={e => setMotherPhone(formatUSPhone(e.target.value))}
+                  value={formatMemberPhone(registrationMother.phone)}
+                  onChange={e => setMotherPhone(formatMemberPhone(e.target.value))}
                   onBlur={() => blurField("motherPhone", registrationMother.phone)}
-                  readOnly={primaryMemberRole === "mother" && !!primaryMember?.phone}
-                  placeholder="(614) 555-0100"
-                  maxLength={14}
+                                    placeholder="(614) 555-0100"
+                  maxLength={16}
                   className={inputClsFor("motherPhone")}
                   data-field-error={errors.motherPhone ? "true" : undefined}
                 />
@@ -2672,8 +2757,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   value={registrationMother.email}
                   onChange={e => setMotherEmail(e.target.value)}
                   onBlur={() => blurField("motherEmail", registrationMother.email)}
-                  readOnly={primaryMemberRole === "mother" && !!primaryMember?.email}
-                  placeholder="mom@email.com"
+                                    placeholder="mom@email.com"
                   className={inputClsFor("motherEmail")}
                   data-field-error={errors.motherEmail ? "true" : undefined}
                 />
@@ -2684,9 +2768,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               required={primaryMemberRole === "mother"}
               error={errors.motherEmployer || errors.motherEmployerOther}
             >
-              {primaryMemberRole === "mother" && primaryMember?.employer ? (
-                <input value={primaryMember.employer} readOnly className={`${inputCls} bg-gray-50`} />
-              ) : (
+              {(
                 <EmployerSelect
                   value={motherEmployer}
                   otherValue={motherEmployerOther}
@@ -2717,8 +2799,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                 value={registrationFather.name}
                 onChange={e => setFatherName(e.target.value)}
                 onBlur={() => blurField("fatherName", registrationFather.name)}
-                readOnly={primaryMemberRole === "father" && !!primaryMember?.name}
-                placeholder="Father's full name"
+                                placeholder="Father's full name"
                 className={inputClsFor("fatherName")}
                 data-field-error={errors.fatherName ? "true" : undefined}
               />
@@ -2727,12 +2808,11 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               <Field label="Phone" required={primaryMemberRole === "father"} error={errors.fatherPhone}>
                 <input
                   type="tel"
-                  value={formatUSPhone(registrationFather.phone)}
-                  onChange={e => setFatherPhone(formatUSPhone(e.target.value))}
+                  value={formatMemberPhone(registrationFather.phone)}
+                  onChange={e => setFatherPhone(formatMemberPhone(e.target.value))}
                   onBlur={() => blurField("fatherPhone", registrationFather.phone)}
-                  readOnly={primaryMemberRole === "father" && !!primaryMember?.phone}
-                  placeholder="(614) 555-0101"
-                  maxLength={14}
+                                    placeholder="(614) 555-0101"
+                  maxLength={16}
                   className={inputClsFor("fatherPhone")}
                   data-field-error={errors.fatherPhone ? "true" : undefined}
                 />
@@ -2743,8 +2823,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   value={registrationFather.email}
                   onChange={e => setFatherEmail(e.target.value)}
                   onBlur={() => blurField("fatherEmail", registrationFather.email)}
-                  readOnly={primaryMemberRole === "father" && !!primaryMember?.email}
-                  placeholder="dad@email.com"
+                                    placeholder="dad@email.com"
                   className={inputClsFor("fatherEmail")}
                   data-field-error={errors.fatherEmail ? "true" : undefined}
                 />
@@ -2755,9 +2834,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
               required={primaryMemberRole === "father"}
               error={errors.fatherEmployer || errors.fatherEmployerOther}
             >
-              {primaryMemberRole === "father" && primaryMember?.employer ? (
-                <input value={primaryMember.employer} readOnly className={`${inputCls} bg-gray-50`} />
-              ) : (
+              {(
                 <EmployerSelect
                   value={fatherEmployer}
                   otherValue={fatherEmployerOther}
@@ -2891,7 +2968,13 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                     ))}
                   </select>
                   {selectedCourse && (
-                    <p className="mt-1.5 text-xs text-muted-foreground">
+                    <p className="mt-1.5 text-xs text-secondary font-medium" data-testid={`text-course-timing-${enr.key}`}>
+                      🕐 Class timing: {courseTiming(selectedCourse)}
+                      <span className="ml-1 font-normal text-muted-foreground">(same for all levels)</span>
+                    </p>
+                  )}
+                  {selectedCourse && (
+                    <p className="mt-1 text-xs text-muted-foreground">
                       Course registration fee:{" "}
                       <span className="font-semibold text-secondary">
                         {selectedCourse.fee != null ? `$${selectedCourse.fee.toFixed(2)}` : "not configured — enter the amount below"}
@@ -2978,7 +3061,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           const course = meta?.courses.find(c => c.id === enr.courseId);
           return {
             key: `course-${enr.key}`,
-            label: course ? `${course.icon} ${course.name}` : `Course ${idx + 1}`,
+            label: course ? `${course.icon} ${course.name} (${courseTiming(course)})` : `Course ${idx + 1}`,
             amount: adminMode ? (parseFloat(enr.amountDue) || 0) : (course?.fee ?? 0),
           };
         });
@@ -2987,7 +3070,10 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           label: `🏛️ Annual Membership (${year}${year > currentTempleYear ? " — paid in advance" : ""})`,
           amount: membershipFee ?? 0,
         }));
-        const total = [...courseLines, ...membershipLines].reduce((sum, line) => sum + line.amount, 0);
+        const bagLines = studentIsNew && bagSuppliesFee
+          ? [{ key: "bag-supplies", label: "🎒 Bag & Supplies Fee (new student, one-time)", amount: bagSuppliesFee }]
+          : [];
+        const total = [...courseLines, ...membershipLines, ...bagLines].reduce((sum, line) => sum + line.amount, 0);
         return (
           <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 space-y-2">
             <div className="flex items-center gap-2 mb-2">
@@ -2997,6 +3083,12 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
             {courseLines.map(line => (
               <div key={line.key} className="flex justify-between items-center text-sm">
                 <span className="text-secondary">{line.label} — Course Registration Fee</span>
+                <span className="font-semibold text-secondary">${line.amount.toFixed(2)}</span>
+              </div>
+            ))}
+            {bagLines.map(line => (
+              <div key={line.key} className="flex justify-between items-center text-sm" data-testid="text-bag-supplies-fee">
+                <span className="text-secondary">{line.label}</span>
                 <span className="font-semibold text-secondary">${line.amount.toFixed(2)}</span>
               </div>
             ))}

@@ -17,7 +17,7 @@ import {
   createNewMemberContextToken,
   createVerifiedMemberContextToken,
 } from "../../lib/member-context";
-import { isValidMemberEmail, normalizeUsPhone } from "../../lib/member-phone";
+import { isValidMemberEmail, normalizeMemberPhone } from "../../lib/member-phone";
 import { getVerifiedAdmin, isSameOriginRequest } from "../../lib/admin-session";
 import {
   clearPublicMemberAccessCookie,
@@ -559,7 +559,7 @@ async function resolveExistingMember(phone: string, identifier: unknown) {
 router.post("/existing-email-hint", async (req, res) => {
   try {
     if (!isSameOriginRequest(req)) return res.status(403).json({ error: "A same-origin request is required." });
-    const phone = normalizeUsPhone(req.body?.phone);
+    const phone = normalizeMemberPhone(req.body?.phone);
     if (!phone) return res.status(400).json({ error: "Enter a valid mobile phone number." });
     const sessionSecret = process.env.SESSION_SECRET;
     if (!sessionSecret) return res.status(503).json({ error: "Email verification is unavailable." });
@@ -591,7 +591,7 @@ router.post("/email-verification/request", async (req, res) => {
     if (!isSameOriginRequest(req)) return res.status(403).json({ error: "A same-origin request is required." });
     clearPublicMemberAccessCookie(res);
     const body = req.body as { phone?: unknown; email?: unknown; memberType?: unknown; identifier?: unknown };
-    const phone = normalizeUsPhone(body?.phone);
+    const phone = normalizeMemberPhone(body?.phone);
     const mode = body?.memberType;
     if (!phone || (mode !== "existing" && mode !== "new")) {
       return res.status(400).json({ error: "Enter a valid phone number and member type." });
@@ -715,7 +715,7 @@ router.post("/email-verification/verify", async (req, res) => {
     if (!isSameOriginRequest(req)) return res.status(403).json({ error: "A same-origin request is required." });
     clearPublicMemberAccessCookie(res);
     const body = req.body as { phone?: unknown; email?: unknown; code?: unknown; memberType?: unknown; identifier?: unknown };
-    const phone = normalizeUsPhone(body?.phone);
+    const phone = normalizeMemberPhone(body?.phone);
     const mode = body?.memberType;
     if (!phone || (mode !== "existing" && mode !== "new")) {
       return res.status(400).json({ error: "Enter a valid phone number and member type." });
@@ -790,7 +790,7 @@ router.post("/lookup", async (req, res) => {
       return res.status(403).json({ error: "A same-origin request is required." });
     }
     const { phone } = req.body as { phone?: string };
-    const digitsOnly = normalizeUsPhone(phone);
+    const digitsOnly = normalizeMemberPhone(phone);
     if (!digitsOnly) {
       return res.status(400).json({ error: "A valid 10-digit phone number is required." });
     }
@@ -886,7 +886,7 @@ router.post("/", async (req, res) => {
     if (!nameParts || !isValidMemberNamePart(nameParts.firstName) || !isValidMemberNamePart(nameParts.lastName)) {
       return res.status(400).json({ error: "Enter the member's first name and last name." });
     }
-    const normalizedPhone = normalizeUsPhone(phone);
+    const normalizedPhone = normalizeMemberPhone(phone);
     if (!normalizedPhone) {
       return res.status(400).json({ error: "Enter a valid 10-digit US phone number (formatting such as parentheses and dashes is allowed)." });
     }
@@ -1010,7 +1010,7 @@ router.put("/:id", async (req, res) => {
       updateData.email = normalizedEmail;
     }
     if (phone !== undefined) {
-      const normalizedPhone = normalizeUsPhone(phone);
+      const normalizedPhone = normalizeMemberPhone(phone);
       if (!normalizedPhone) {
         return res.status(400).json({ error: "Enter a valid 10-digit US phone number. Member phone cannot be cleared." });
       }
@@ -1019,7 +1019,7 @@ router.put("/:id", async (req, res) => {
     const emailChanged = email !== undefined &&
       (!normalizeMemberEmail(current.email) || normalizeMemberEmail(email) !== normalizeMemberEmail(current.email));
     const phoneChanged = phone !== undefined &&
-      (!normalizeUsPhone(current.phone) || normalizeUsPhone(phone) !== normalizeUsPhone(current.phone));
+      (!normalizeMemberPhone(current.phone) || normalizeMemberPhone(phone) !== normalizeMemberPhone(current.phone));
     if (!verifiedAdmin && (emailChanged || phoneChanged)) {
       return res.status(403).json({ error: "A verified administrator session is required to change member contact information." });
     }
@@ -1043,7 +1043,7 @@ router.put("/:id", async (req, res) => {
 
     if (!member) return res.status(409).json({ error: "Member contact information changed. Reload the record and try again." });
 
-    if (normalizeUsPhone(current.phone) !== normalizeUsPhone(member.phone)) {
+    if (normalizeMemberPhone(current.phone) !== normalizeMemberPhone(member.phone)) {
       clearPublicMemberAccessCookie(res);
     }
     res.json(member);

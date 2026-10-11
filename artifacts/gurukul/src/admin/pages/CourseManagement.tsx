@@ -761,8 +761,9 @@ function CourseFormPanel({
               <Input value={form.ageGroup} onChange={e => setForm(f => ({ ...f, ageGroup: e.target.value }))} placeholder="e.g., Ages 5–18" />
             </div>
             <div>
-              <label className="text-xs font-semibold text-secondary mb-1 block">Default Schedule</label>
-              <Input value={form.schedule} onChange={e => setForm(f => ({ ...f, schedule: e.target.value }))} placeholder="e.g., Sundays 9 AM" />
+              <label className="text-xs font-semibold text-secondary mb-1 block">Class Timing (all levels)</label>
+              <Input value={form.schedule} onChange={e => setForm(f => ({ ...f, schedule: e.target.value }))} placeholder="e.g., Sundays 10:00 AM – 11:00 AM" />
+              <p className="text-[11px] text-muted-foreground mt-1">Shown to parents during registration. Every level of this subject uses this timing.</p>
             </div>
           </div>
 

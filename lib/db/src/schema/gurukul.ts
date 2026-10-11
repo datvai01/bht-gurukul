@@ -165,6 +165,22 @@ export const courseLevelsTable = pgTable("course_levels", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── Membership Tiers ─────────────────────────────────────────────────────────
+// Administrator-maintained membership types. "annual" tiers end December 31 of
+// their membership year; "lifetime" tiers never expire (members.membership_year = 2099).
+
+export const membershipTiersTable = pgTable("membership_tiers", {
+  id:        serial("id").primaryKey(),
+  name:      text("name").notNull().unique(),         // e.g. "Family Membership"
+  category:  text("category").notNull(),               // "annual" | "lifetime"
+  fee:       numeric("fee", { precision: 10, scale: 2 }), // null = not configured (never assumed)
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive:  boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type MembershipTier = typeof membershipTiersTable.$inferSelect;
+
 // ─── Temple Members ───────────────────────────────────────────────────────────
 // A temple member (parent/guardian) who has registered or been looked up.
 
@@ -194,6 +210,24 @@ export const membersTable = pgTable("members", {
   validationNotes:        text("validation_notes"),
   // Stable human-readable identifier, e.g. MEM-2026-0042
   memberCode:             text("member_code").unique(),
+  // ── Membership tier & history ─────────────────────────────────────────────
+  tierId:                 integer("tier_id").references(() => membershipTiersTable.id, { onDelete: "set null" }),
+  membershipStartDate:    date("membership_start_date", { mode: "string" }), // start of the current membership
+  templeMemberYears:      integer("temple_member_years"),  // years as a temple member (from temple records)
+  legacyMemberId:         text("legacy_member_id"),        // ID from the previous temple system; reference only
+  source:                 text("source"),                  // "registration" | "admin" | "temple_import"
+  // ── Structured address (members.address keeps the formatted full address) ─
+  addressLine1:           text("address_line1"),
+  addressLine2:           text("address_line2"),
+  city:                   text("city"),
+  state:                  text("state"),        // 2-letter US code; region name outside the US
+  postalCode:             text("postal_code"),
+  country:                text("country").default("US"),
+  // ── Spouse (fills the non-primary parent on the student form) ────────────
+  spouseFirstName:        text("spouse_first_name"),
+  spouseLastName:         text("spouse_last_name"),
+  spouseEmail:            text("spouse_email"),
+  spousePhone:            text("spouse_phone"),
 }, (table) => [
   unique("members_phone_uniq").on(table.phone),
   uniqueIndex("members_phone_normalized_uniq")
@@ -298,6 +332,33 @@ export const paymentsTable = pgTable("payments", {
   pendingReason: text("pending_reason"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ─── Student Fees ─────────────────────────────────────────────────────────────
+// One-time, per-student fees that are not tied to a course enrollment. Today this is the
+// Bag & Supplies fee charged once to each new student (fee_type = "bag_supplies").
+
+export const studentFeesTable = pgTable("student_fees", {
+  id:             serial("id").primaryKey(),
+  studentId:      integer("student_id")
+    .notNull()
+    .references(() => studentsTable.id, { onDelete: "cascade" }),
+  registrationId: integer("registration_id")
+    .references(() => studentRegistrationsTable.id, { onDelete: "set null" }),
+  feeType:        text("fee_type").notNull(),
+  amountDue:      numeric("amount_due", { precision: 10, scale: 2 }).notNull(),
+  amountPaid:     numeric("amount_paid", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  paymentStatus:  paymentStatusEnum("payment_status").notNull().default("Pending"),
+  paymentMethod:  text("payment_method"),
+  receiptId:      text("receipt_id"),
+  paymentDate:    text("payment_date"),
+  pendingReason:  text("pending_reason"),   // same values as payments.pending_reason
+  createdAt:      timestamp("created_at").defaultNow(),
+}, (t) => [
+  // A student is charged each one-time fee at most once.
+  unique("student_fees_student_type_uniq").on(t.studentId, t.feeType),
+]);
+
+export type StudentFee = typeof studentFeesTable.$inferSelect;
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 // Temple Gurukul supplies and materials stock tracking.
@@ -470,6 +531,8 @@ export const membershipPaymentsTable = pgTable("membership_payments", {
   membershipYear: integer("membership_year").notNull(),
   amountDue:      numeric("amount_due",  { precision: 10, scale: 2 }).notNull().default("150.00"),
   amountPaid:     numeric("amount_paid", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  // Balance = amount_due - discount_amount - amount_paid
+  discountAmount: numeric("discount_amount", { precision: 10, scale: 2 }).notNull().default("0.00"),
   paymentStatus:  paymentStatusEnum("payment_status").notNull().default("Pending"),
   paymentMethod:  text("payment_method"),   // "Stripe", "Check", "Zelle", "Cash", etc.
   receiptId:      text("receipt_id"),

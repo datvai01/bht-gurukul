@@ -14,6 +14,7 @@ const PUBLIC_KEYS = [
   "active_curriculum_years_list",
   "stripe_membership_fee",
   "stripe_course_fee",
+  "bag_supplies_fee",
   // ── Registration window ────────────────────────────────────────────────────
   "registration_curriculum_year",
   "registration_open_date",
@@ -43,6 +44,7 @@ export const SITE_CONTENT_DEFAULTS: Record<string, string> = {
   active_curriculum_years_list: "2026-2027,2027-2028",
   stripe_membership_fee:        "",
   stripe_course_fee:            "",
+  bag_supplies_fee:             "11",
   registration_curriculum_year: "2027-2028",
   registration_open_date:       "",
   registration_close_date:      "",

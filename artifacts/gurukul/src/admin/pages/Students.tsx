@@ -75,6 +75,18 @@ type Student = {
   totalDue: number;
   worstPayStatus: "Paid" | "Pending" | "Overdue";
   parentPhone: string;
+  // One-time Bag & Supplies fee (only for students charged as new students)
+  bagFee: StudentFee | null;
+};
+
+type StudentFee = {
+  id: number;
+  amountDue: number;
+  amountPaid: number;
+  paymentStatus: "Paid" | "Pending" | "Overdue";
+  pendingReason: string | null;
+  paymentMethod: string;
+  receiptId: string;
 };
 
 type RawRow = Record<string, unknown>;
@@ -219,6 +231,7 @@ function groupRows(raw: RawRow[]): Student[] {
         totalDue: 0,
         worstPayStatus: "Paid",
         parentPhone: "",
+        bagFee: (r.bagFee as StudentFee | null) ?? null,
       });
     }
     const s = map.get(code)!;
@@ -256,10 +269,12 @@ function groupRows(raw: RawRow[]): Student[] {
     s.primaryCourse  = current[0]?.course ?? "";
     s.primaryLevel   = current[0]?.level ?? "";
     s.primarySection = current[0]?.section ?? "";
-    s.totalPaid = financial.reduce((a, e) => a + e.amountPaid, 0);
-    s.totalDue  = financial.reduce((a, e) => a + e.amountDue, 0);
+    // The one-time Bag & Supplies fee counts toward the student's totals and payment status.
+    const charges = s.bagFee ? [...financial, s.bagFee] : financial;
+    s.totalPaid = charges.reduce((a, e) => a + e.amountPaid, 0);
+    s.totalDue  = charges.reduce((a, e) => a + e.amountDue, 0);
     let worst = 1;
-    for (const e of financial) {
+    for (const e of charges) {
       const paymentRank = PAYMENT_RANK[e.paymentStatus] ?? 1;
       const liabilityRank = e.amountDue > e.amountPaid && paymentRank < PAYMENT_RANK.Pending
         ? PAYMENT_RANK.Pending
@@ -1432,8 +1447,42 @@ function PaymentDrawer({ student, onClose, onRefresh }: {
     }
   }
 
-  const totalDue  = student.enrollments.reduce((a, e) => a + e.amountDue,  0);
-  const totalPaid = student.enrollments.reduce((a, e) => a + e.amountPaid, 0);
+  const bagFee    = student.bagFee;
+  const totalDue  = student.enrollments.reduce((a, e) => a + e.amountDue,  0) + (bagFee?.amountDue ?? 0);
+  const totalPaid = student.enrollments.reduce((a, e) => a + e.amountPaid, 0) + (bagFee?.amountPaid ?? 0);
+
+  // ── Bag & Supplies fee (one-time, new students) ──────────────────────────
+  const [bagEditing, setBagEditing] = useState(false);
+  const [bagPaid,    setBagPaid]    = useState("");
+  const [bagStatus,  setBagStatus]  = useState<"Paid" | "Pending" | "Overdue">("Pending");
+  const [bagMethod,  setBagMethod]  = useState("");
+
+  function startBagEdit() {
+    if (!bagFee) return;
+    setBagPaid(String(bagFee.amountPaid));
+    setBagStatus(bagFee.paymentStatus);
+    setBagMethod(bagFee.paymentMethod);
+    setBagEditing(true);
+  }
+
+  async function saveBagFee() {
+    if (!bagFee) return;
+    setSaving(true);
+    try {
+      await adminApi.students.updateStudentFee(bagFee.id, {
+        amountPaid: parseFloat(bagPaid) || 0,
+        paymentStatus: bagStatus,
+        paymentMethod: bagMethod || null,
+      });
+      toast.success("Bag & Supplies fee updated");
+      setBagEditing(false);
+      onRefresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update the fee");
+    } finally {
+      setSaving(false);
+    }
+  }
   const balance   = totalDue - totalPaid;
 
   const inputCls  = "w-full px-2.5 py-1.5 text-sm border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary bg-white";
@@ -1466,6 +1515,76 @@ function PaymentDrawer({ student, onClose, onRefresh }: {
             <p className="text-[11px] text-muted-foreground" data-testid="text-payment-history-scope">
               Payment history and overall totals include current and historical enrollments.
             </p>
+          )}
+          {bagFee && (
+            <div className="rounded-xl border border-border p-4 space-y-2.5" data-testid="card-bag-supplies-fee">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-secondary">🎒 Bag &amp; Supplies Fee</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">One-time fee for a new student</div>
+                </div>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${PAY_BADGE[bagFee.paymentStatus] ?? "bg-gray-100 text-gray-500"}`}>
+                  {bagFee.paymentStatus === "Pending" && bagFee.pendingReason ? `Pending – ${bagFee.pendingReason}` : bagFee.paymentStatus}
+                </span>
+              </div>
+              {bagEditing ? (
+                <div className="space-y-3 pt-2 border-t border-border/60">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold block mb-1">Paid ($)</label>
+                      <input type="number" min="0" step="0.01" value={bagPaid} onChange={ev => setBagPaid(ev.target.value)} className={inputCls} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold block mb-1">Status</label>
+                      <select value={bagStatus} onChange={ev => setBagStatus(ev.target.value as "Paid" | "Pending" | "Overdue")} className={selectCls}>
+                        <option value="Paid">Paid</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Overdue">Overdue</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold block mb-1">Method</label>
+                      <select value={bagMethod} onChange={ev => setBagMethod(ev.target.value)} className={selectCls}>
+                        <option value="">— None —</option>
+                        <option value="Cash">Cash</option>
+                        <option value="Check">Check</option>
+                        <option value="Zelle">Zelle</option>
+                        <option value="Online">Online</option>
+                        <option value="Waived">Waived</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setBagEditing(false)} disabled={saving} className="px-3 py-1.5 text-xs border border-border rounded-lg hover:bg-gray-50">Cancel</button>
+                    <button onClick={saveBagFee} disabled={saving} className="px-3 py-1.5 text-xs bg-primary text-white rounded-lg hover:bg-primary/90 flex items-center gap-1.5 disabled:opacity-50">
+                      {saving && <Loader2 className="w-3 h-3 animate-spin" />} Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="bg-gray-50 rounded-lg px-2 py-1.5">
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Due</div>
+                      <div className="text-sm font-semibold text-secondary">${bagFee.amountDue.toFixed(2)}</div>
+                    </div>
+                    <div className="bg-green-50 rounded-lg px-2 py-1.5">
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Paid</div>
+                      <div className="text-sm font-semibold text-green-700">${bagFee.amountPaid.toFixed(2)}</div>
+                    </div>
+                    <div className={`rounded-lg px-2 py-1.5 ${bagFee.amountDue - bagFee.amountPaid > 0 ? "bg-orange-50" : "bg-green-50"}`}>
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Balance</div>
+                      <div className={`text-sm font-semibold ${bagFee.amountDue - bagFee.amountPaid > 0 ? "text-orange-600" : "text-green-700"}`}>
+                        ${(bagFee.amountDue - bagFee.amountPaid).toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                  <button onClick={startBagEdit} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-primary border border-primary/30 rounded-lg hover:bg-primary/5">
+                    <Pencil className="w-3 h-3" /> Edit Payment
+                  </button>
+                </>
+              )}
+            </div>
           )}
           {student.enrollments.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No enrollments found.</p>

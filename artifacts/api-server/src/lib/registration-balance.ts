@@ -6,6 +6,7 @@ import {
   membersTable,
   membershipPaymentsTable,
   paymentsTable,
+  studentFeesTable,
   studentRegistrationsTable,
   studentsTable,
 } from "@workspace/db/schema";
@@ -16,10 +17,14 @@ import { templeYear } from "./membership";
 export const TEMPLE_DESK_PAYMENT = "Temple Desk Payment";
 export const TEMPLE_DESK_VALIDATION_PAYMENT = "Temple Desk Validation/Payment";
 
+// One-time fee charged to each new student; the amount is the "bag_supplies_fee" setting.
+export const BAG_SUPPLIES_FEE = "bag_supplies";
+export const BAG_SUPPLIES_LABEL = "Bag & Supplies Fee (new student)";
+
 type Executor = Pick<typeof db, "select" | "update">;
 
 export type BalanceItem = {
-  kind: "course" | "membership";
+  kind: "course" | "membership" | "fee";
   id: number;
   label: string;
   amountDue: number;
@@ -117,6 +122,15 @@ export async function registrationBalance(
     ))
     .orderBy(membershipPaymentsTable.membershipYear);
 
+  const feeRows = await executor.select({
+    id: studentFeesTable.id,
+    feeType: studentFeesTable.feeType,
+    amountDue: studentFeesTable.amountDue,
+    amountPaid: studentFeesTable.amountPaid,
+    pendingReason: studentFeesTable.pendingReason,
+  }).from(studentFeesTable)
+    .where(and(eq(studentFeesTable.studentId, student.id), ne(studentFeesTable.paymentStatus, "Paid")));
+
   const items: BalanceItem[] = [
     ...membershipRows.map(row => ({
       kind: "membership" as const,
@@ -131,6 +145,15 @@ export async function registrationBalance(
       kind: "course" as const,
       id: row.id,
       label: `${row.courseName} · ${row.className}`,
+      amountDue: money(row.amountDue),
+      amountPaid: money(row.amountPaid),
+      balance: Math.max(0, money(row.amountDue) - money(row.amountPaid)),
+      pendingReason: row.pendingReason,
+    })),
+    ...feeRows.map(row => ({
+      kind: "fee" as const,
+      id: row.id,
+      label: row.feeType === BAG_SUPPLIES_FEE ? BAG_SUPPLIES_LABEL : row.feeType,
       amountDue: money(row.amountDue),
       amountPaid: money(row.amountPaid),
       balance: Math.max(0, money(row.amountDue) - money(row.amountPaid)),
@@ -156,6 +179,10 @@ export async function markTempleDeskPending(executor: Executor, balance: Registr
   const outstanding = balance.items.filter(item => item.balance > 0);
   const courseIds = outstanding.filter(item => item.kind === "course").map(item => item.id);
   const membershipIds = outstanding.filter(item => item.kind === "membership").map(item => item.id);
+  const feeIds = outstanding.filter(item => item.kind === "fee").map(item => item.id);
+  if (feeIds.length) {
+    await executor.update(studentFeesTable).set({ pendingReason: reason }).where(inArray(studentFeesTable.id, feeIds));
+  }
   if (courseIds.length) {
     await executor.update(paymentsTable).set({ pendingReason: reason }).where(inArray(paymentsTable.id, courseIds));
   }

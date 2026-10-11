@@ -13,7 +13,7 @@ import {
   paymentsTable,
   adminUsersTable,
 } from "@workspace/db/schema";
-import { eq, sql, isNull, and, inArray } from "drizzle-orm";
+import { eq, sql, isNull, and } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -301,6 +301,10 @@ router.put("/:id", async (req, res) => {
         fee:            feeValue,
       })
       .where(eq(coursesTable.id, id));
+    // Class timing is set per subject: every level of the course shares the course timing.
+    if (schedule !== undefined) {
+      await db.update(courseLevelsTable).set({ schedule: schedule || null }).where(eq(courseLevelsTable.courseId, id));
+    }
 
     const updated = (await buildAdminCourses(true)).find((c) => c.id === id);
     await writeAudit(req, {
@@ -382,7 +386,9 @@ router.delete("/:id", async (req, res) => {
 router.post("/:id/levels", async (req, res) => {
   try {
     const courseId = parseInt(req.params.id);
-    const { levelNumber, className, schedule, capacity } = req.body;
+    const { levelNumber, className, capacity } = req.body;
+    // New levels inherit the subject's class timing.
+    const [course] = await db.select({ schedule: coursesTable.schedule }).from(coursesTable).where(eq(coursesTable.id, courseId));
 
     const existing = await db
       .select()
@@ -392,14 +398,14 @@ router.post("/:id/levels", async (req, res) => {
 
     const [level] = await db
       .insert(courseLevelsTable)
-      .values({ courseId, levelNumber, className: className || `Level ${levelNumber}`, schedule: schedule || null, capacity: capacity || 20, enrolled: 0 })
+      .values({ courseId, levelNumber, className: className || `Level ${levelNumber}`, schedule: course?.schedule || null, capacity: capacity || 20, enrolled: 0 })
       .returning();
     await writeAudit(req, {
       moduleName: "Course Management",
       actionType: "Add",
       entityName: className || `Level ${levelNumber}`,
       entityId:   level.id,
-      newValue:   { courseId, levelNumber, className, schedule, capacity },
+      newValue:   { courseId, levelNumber, className, schedule: course?.schedule ?? null, capacity },
     });
     res.status(201).json(level);
   } catch (err) {
@@ -412,12 +418,12 @@ router.post("/:id/levels", async (req, res) => {
 router.put("/levels/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const { className, schedule, capacity, status } = req.body;
+    const { className, capacity, status } = req.body;
     const [level] = await db
       .update(courseLevelsTable)
       .set({
+        // Timing is not edited per level; it always follows the course (see PUT /:id).
         className: className || undefined,
-        schedule:  schedule  || undefined,
         capacity:  capacity !== undefined ? parseInt(capacity) : undefined,
         status:    status || undefined,
       })
@@ -428,7 +434,7 @@ router.put("/levels/:id", async (req, res) => {
       actionType: "Edit",
       entityName: className || `Level ${id}`,
       entityId:   id,
-      newValue:   { className, schedule, capacity, status },
+      newValue:   { className, capacity, status },
     });
     res.json(level);
   } catch (err) {

@@ -38,6 +38,35 @@ export function formatUSPhone(raw: string): string {
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
+// India mobile numbers are entered with +91 and stored as "91" followed by ten digits.
+function isIndiaPhone(raw: string): boolean {
+  const digits = raw.replace(/\D/g, "");
+  return raw.trim().startsWith("+91") || (raw.trim().startsWith("91") && digits.length === 12);
+}
+
+/**
+ * Validates a member/parent phone: a US number, or an India mobile entered with +91.
+ */
+export function validateMemberPhone(v: string, required = true): string {
+  if (isIndiaPhone(v)) {
+    return /^91[6-9]\d{9}$/.test(v.replace(/\D/g, ""))
+      ? "" : "Please enter a valid India mobile number (+91 followed by 10 digits).";
+  }
+  return validateUSPhone(v, required);
+}
+
+/**
+ * Formats a member/parent phone as the user types: +91 XXXXX XXXXX for India,
+ * (XXX) XXX-XXXX otherwise.
+ */
+export function formatMemberPhone(raw: string): string {
+  if (isIndiaPhone(raw)) {
+    const local = raw.replace(/\D/g, "").slice(2, 12);
+    return `+91 ${local.slice(0, 5)}${local.length > 5 ? ` ${local.slice(5)}` : ""}`.trimEnd();
+  }
+  return formatUSPhone(raw);
+}
+
 /**
  * Strips all non-digit characters from a phone string.
  * Use this to get the raw 10-digit value before storing.

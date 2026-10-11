@@ -8,6 +8,7 @@ import {
   coursesTable,
   courseSectionsTable,
   paymentsTable,
+  studentFeesTable,
   membersTable,
   membershipPaymentsTable,
   portalSettingsTable,
@@ -18,6 +19,7 @@ import { writeAudit } from "../../lib/audit";
 import { isCompleteAddress } from "../../lib/address";
 import { membershipStatus, templeDate, templeYear } from "../../lib/membership";
 import {
+  BAG_SUPPLIES_FEE,
   TEMPLE_DESK_VALIDATION_PAYMENT,
   configuredFee,
   isValidatedMember,
@@ -173,7 +175,7 @@ async function buildStudentList() {
       courseId:       courseLevelsTable.courseId,
       courseLevelId:  enrollmentsTable.courseLevelId,
       levelNumber:    courseLevelsTable.levelNumber,
-      schedule:       courseLevelsTable.schedule,
+      schedule:       coursesTable.schedule,   // subject timing (same for every level)
       courseName:     coursesTable.name,
       courseIcon:     coursesTable.icon,
       sectionName:    courseSectionsTable.sectionName,
@@ -186,6 +188,14 @@ async function buildStudentList() {
       amountPaid:     paymentsTable.amountPaid,
       paymentMethod:  paymentsTable.paymentMethod,
       receiptId:      paymentsTable.receiptId,
+      // One-time Bag & Supplies fee (new students)
+      bagFeeId:       studentFeesTable.id,
+      bagFeeDue:      studentFeesTable.amountDue,
+      bagFeePaid:     studentFeesTable.amountPaid,
+      bagFeeStatus:   studentFeesTable.paymentStatus,
+      bagFeeReason:   studentFeesTable.pendingReason,
+      bagFeeMethod:   studentFeesTable.paymentMethod,
+      bagFeeReceipt:  studentFeesTable.receiptId,
     })
     .from(studentsTable)
     .leftJoin(membersTable, eq(membersTable.id, studentsTable.memberId))
@@ -194,6 +204,7 @@ async function buildStudentList() {
     .leftJoin(coursesTable, eq(coursesTable.id, courseLevelsTable.courseId))
     .leftJoin(courseSectionsTable, eq(courseSectionsTable.id, enrollmentsTable.sectionId))
     .leftJoin(paymentsTable, eq(paymentsTable.enrollmentId, enrollmentsTable.id))
+    .leftJoin(studentFeesTable, and(eq(studentFeesTable.studentId, studentsTable.id), eq(studentFeesTable.feeType, BAG_SUPPLIES_FEE)))
     .orderBy(asc(studentsTable.studentCode), asc(enrollmentsTable.id));
 
   return rows.map((r) => ({
@@ -237,6 +248,15 @@ async function buildStudentList() {
     amountPaid:     parseFloat(r.amountPaid ?? "0"),
     paymentMethod:  r.paymentMethod ?? "-",
     receiptId:      r.receiptId ?? "-",
+    bagFee: r.bagFeeId == null ? null : {
+      id:            r.bagFeeId,
+      amountDue:     parseFloat(r.bagFeeDue ?? "0"),
+      amountPaid:    parseFloat(r.bagFeePaid ?? "0"),
+      paymentStatus: (r.bagFeeStatus ?? "Pending") as "Paid" | "Pending" | "Overdue",
+      pendingReason: r.bagFeeReason ?? null,
+      paymentMethod: r.bagFeeMethod ?? "",
+      receiptId:     r.bagFeeReceipt ?? "",
+    },
   }));
 }
 
@@ -252,6 +272,7 @@ router.get("/meta", async (req, res) => {
         courseName:  coursesTable.name,
         courseIcon:  coursesTable.icon,
         courseFee:   coursesTable.fee,
+        courseSchedule: coursesTable.schedule,   // subject timing shown to parents
         ageGroup:    coursesTable.ageGroup,
         levelId:     courseLevelsTable.id,
         levelNumber: courseLevelsTable.levelNumber,
@@ -272,10 +293,10 @@ router.get("/meta", async (req, res) => {
       ))
       .orderBy(asc(coursesTable.name), asc(courseLevelsTable.levelNumber), asc(courseSectionsTable.sectionName));
 
-    const courseMap = new Map<number, { id: number; name: string; icon: string; fee: number | null; ageGroup: string; levels: Map<number, { id: number; levelNumber: number; className: string; sections: { id: number; sectionName: string; schedule: string }[] }> }>();
+    const courseMap = new Map<number, { id: number; name: string; icon: string; fee: number | null; schedule: string; ageGroup: string; levels: Map<number, { id: number; levelNumber: number; className: string; sections: { id: number; sectionName: string; schedule: string }[] }> }>();
     for (const r of rows) {
       if (!courseMap.has(r.courseId)) {
-        courseMap.set(r.courseId, { id: r.courseId, name: r.courseName, icon: r.courseIcon ?? "", fee: r.courseFee != null ? parseFloat(r.courseFee) : null, ageGroup: r.ageGroup, levels: new Map() });
+        courseMap.set(r.courseId, { id: r.courseId, name: r.courseName, icon: r.courseIcon ?? "", fee: r.courseFee != null ? parseFloat(r.courseFee) : null, schedule: r.courseSchedule?.trim() ?? "", ageGroup: r.ageGroup, levels: new Map() });
       }
       const course = courseMap.get(r.courseId)!;
       if (!course.levels.has(r.levelId)) {
@@ -356,7 +377,7 @@ router.post("/", async (req, res) => {
 
     const settingRows = await db.select({ key: portalSettingsTable.key, value: portalSettingsTable.value })
       .from(portalSettingsTable)
-      .where(inArray(portalSettingsTable.key, ["session_start_date", "stripe_course_fee", "stripe_membership_fee"]));
+      .where(inArray(portalSettingsTable.key, ["session_start_date", "stripe_course_fee", "stripe_membership_fee", "bag_supplies_fee"]));
     const setting = (key: string) => settingRows.find(row => row.key === key)?.value?.trim() || "";
     const sessionStartDate = setting("session_start_date");
     if (!verifiedAdmin && !isIsoCalendarDate(sessionStartDate)) {
@@ -364,6 +385,9 @@ router.post("/", async (req, res) => {
     }
     // Fees come only from administrator configuration; nothing is assumed.
     const membershipFee = configuredFee(setting("stripe_membership_fee"));
+    // Bag & Supplies fee for new students: $11.00 until the administrator sets it.
+    const bagSuppliesRow = settingRows.find(row => row.key === "bag_supplies_fee");
+    const bagSuppliesFee = bagSuppliesRow ? configuredFee(bagSuppliesRow.value) : 11;
 
     // The current curriculum year is server-owned for unauthenticated/public registrations.
     const [configuredYear] = await db
@@ -544,7 +568,7 @@ router.post("/", async (req, res) => {
     );
     if (!primaryContacts.ok) {
       return res.status(400).json({
-        error: `The selected primary parent's ${primaryContacts.field} must match the linked member record.`,
+        error: `Enter a valid ${primaryContacts.field} for the Primary Member.`,
       });
     }
     // The verified member is the same parent (Mother or Father) on all of their students.
@@ -603,6 +627,8 @@ router.post("/", async (req, res) => {
       if (candidates.length > 1) throw new StudentSubjectsError(409, "ambiguous-student-match");
       if (studentCode?.trim() && !candidates.length) throw new StudentSubjectsError(400, "The selected student ID does not belong to this member.");
       let student = candidates[0];
+      // A new student is registering with BHT Gurukul for the first time.
+      let firstRegistration = !student;
       if (student) {
         const registrations = await tx.select({
           id: studentRegistrationsTable.id,
@@ -616,6 +642,9 @@ router.post("/", async (req, res) => {
           normalizeCurriculumYear(row.curriculumYear) === currentYearKey,
         );
         if (existingRegistration) throw new StudentSubjectsError(409, "current-session-exists");
+        const [anyEnrollment] = await tx.select({ id: enrollmentsTable.id }).from(enrollmentsTable)
+          .where(eq(enrollmentsTable.studentId, student.id)).limit(1);
+        firstRegistration = registrations.length === 0 && !anyEnrollment;
         const profileYearKey = normalizeCurriculumYear(student.curriculumYear);
         if (!profileYearKey || profileYearKey === currentYearKey) {
           const [legacyEnrollment] = await tx.select({ id: enrollmentsTable.id }).from(enrollmentsTable)
@@ -687,6 +716,23 @@ router.post("/", async (req, res) => {
           amountDue: (adminOverride ?? courseFeeDue ?? 0).toFixed(2),
           amountPaid: "0.00", paymentStatus: "Pending", pendingReason: unpaidReason,
         });
+      }
+      // One-time Bag & Supplies fee; the unique (student, fee type) key prevents a second charge.
+      if (firstRegistration) {
+        if (bagSuppliesFee === null) {
+          throw new StudentSubjectsError(503, "The Bag & Supplies fee is not configured. Please contact the administration.");
+        }
+        if (bagSuppliesFee > 0) {
+          await tx.insert(studentFeesTable).values({
+            studentId: student.id,
+            registrationId: registration.id,
+            feeType: BAG_SUPPLIES_FEE,
+            amountDue: bagSuppliesFee.toFixed(2),
+            amountPaid: "0.00",
+            paymentStatus: "Pending",
+            pendingReason: unpaidReason,
+          }).onConflictDoNothing();
+        }
       }
       const currentYear = templeYear();
       const membershipYears = [
@@ -1145,7 +1191,15 @@ router.post("/check-duplicate", async (req, res): Promise<void> => {
     const admin = await getVerifiedAdmin(req);
     const canReconcile = Boolean(admin) || await publicRegistrationWindowOpen();
     const currentRegistration = await currentRegistrationSummary(student.studentCode, memberNumber, canReconcile, Boolean(admin));
-    res.json({ student, currentRegistration });
+    // A student with no earlier registration or enrollment is still a new student (Bag & Supplies fee).
+    const [history] = await db.select({
+      registrations: sql<number>`(SELECT COUNT(*)::int FROM student_registrations sr JOIN students s ON s.id = sr.student_id WHERE s.student_code = ${student.studentCode})`,
+      enrollments: sql<number>`(SELECT COUNT(*)::int FROM enrollments e JOIN students s ON s.id = e.student_id WHERE s.student_code = ${student.studentCode})`,
+    }).from(sql`(SELECT 1) AS one`);
+    res.json({
+      student: { ...student, firstRegistration: Number(history?.registrations ?? 0) === 0 && Number(history?.enrollments ?? 0) === 0 },
+      currentRegistration,
+    });
   } catch (err) {
     if (err instanceof StudentSubjectsError) {
       res.status(err.statusCode).json({ error: err.message });
@@ -2039,6 +2093,41 @@ router.patch("/payments/:enrollmentId", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to update payment");
     res.status(500).json({ error: "Failed to update payment" });
+  }
+});
+
+// PATCH /api/admin/students/fees/:feeId — (admin) record payment of a one-time student fee
+router.patch("/fees/:feeId", async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Request origin could not be verified." });
+  if (!await requireVerifiedAdmin(req, res)) return;
+  try {
+    const feeId = parseInt(req.params.feeId);
+    if (isNaN(feeId)) return res.status(400).json({ error: "Invalid fee id" });
+    const { amountDue, amountPaid, paymentStatus, paymentMethod, receiptId, paymentDate } = req.body as {
+      amountDue?: number; amountPaid?: number; paymentStatus?: "Paid" | "Pending" | "Overdue";
+      paymentMethod?: string | null; receiptId?: string | null; paymentDate?: string | null;
+    };
+    const updates: Partial<typeof studentFeesTable.$inferInsert> = {};
+    if (amountDue !== undefined) updates.amountDue = String(amountDue);
+    if (amountPaid !== undefined) updates.amountPaid = String(amountPaid);
+    if (paymentStatus !== undefined) updates.paymentStatus = paymentStatus;
+    if (paymentStatus === "Paid") updates.pendingReason = null;
+    if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod || null;
+    if (receiptId !== undefined) updates.receiptId = receiptId || null;
+    if (paymentDate !== undefined) updates.paymentDate = paymentDate || null;
+    const [fee] = await db.update(studentFeesTable).set(updates).where(eq(studentFeesTable.id, feeId)).returning();
+    if (!fee) return res.status(404).json({ error: "Fee record not found" });
+    await writeAudit(req, {
+      moduleName: "Student Registration",
+      actionType: "Edit",
+      entityName: `Student fee #${feeId} (${fee.feeType})`,
+      entityId: feeId,
+      newValue: updates,
+    });
+    res.json(fee);
+  } catch (err) {
+    req.log.error({ err }, "Failed to update student fee");
+    res.status(500).json({ error: "Failed to update the fee payment" });
   }
 });
 

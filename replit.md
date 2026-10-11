@@ -141,12 +141,21 @@ course selection (one level per course, course-specific fees) → policy accepta
   members pay at the Temple Desk only. Unpaid rows carry `pending_reason`
   ("Temple Desk Payment" or "Temple Desk Validation/Payment").
 
+**v7 additions:**
+- Primary Member details are pre-filled from the verified member record and stay editable; edits are
+  validated and saved on the student registration (the membership record is not changed).
+- Class timing is set per subject (`courses.schedule`, "Class Timing" in Course Management); every level
+  of the subject uses it, and parents see it during course selection.
+- New students (first registration with BHT Gurukul) pay a one-time Bag & Supplies fee, stored in
+  `student_fees` (one per student). The amount is the `bag_supplies_fee` setting ($11.00 by default);
+  admins record its payment in the student's Payment Details drawer.
+
 **Admin configuration required before public registration opens** (Settings + Course Management):
 Registration curriculum year, Registration Open/Close dates, **Session Start/End dates**, annual
 membership fee, and a **fee on every course**. Missing values block registration with a clear message.
 
 **Schema additions:** `members.first_name`, `members.last_name` (existing names are split automatically
-at API startup), `payments.pending_reason`, `membership_payments.pending_reason`. Apply with
+at API startup), `payments.pending_reason`, `membership_payments.pending_reason`, `student_fees`. Apply with
 `pnpm --filter @workspace/db run push`.
 
 **Local development (outside Replit):** the Vite dev server proxies `/api` when `API_PROXY_TARGET` is set,

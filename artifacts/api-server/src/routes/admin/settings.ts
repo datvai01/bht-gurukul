@@ -15,6 +15,7 @@ const DEFAULTS: Record<string, string> = {
   stripe_secret_key:                 "sk_test_placeholder",
   stripe_membership_fee:             "",
   stripe_course_fee:                 "",
+  bag_supplies_fee:                  "11",   // one-time fee per new student; admin may change it
   audit_retention_days:              "7",
   registration_curriculum_year:      "2027-2028",
   registration_curriculum_years_list:"2026-2027,2027-2028",
@@ -34,6 +35,7 @@ const AUDITED_SETTING_LABELS: Record<string, string> = {
   session_end_date:             "Session End Date",
   stripe_membership_fee:        "Annual Membership Fee",
   stripe_course_fee:            "Default Course Fee",
+  bag_supplies_fee:             "Bag & Supplies Fee",
 };
 
 // Write-only secrets: never returned by GET. The response carries a

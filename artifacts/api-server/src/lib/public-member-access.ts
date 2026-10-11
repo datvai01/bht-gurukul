@@ -3,10 +3,11 @@ import type { Request, Response } from "express";
 // Keep the identity proof module runnable without loading the DB schema under
 // Node's strip-types test runner, which does not support directory imports.
 // @ts-expect-error Node's strip-types test runner requires explicit TS extensions.
-import { isValidMemberEmail, normalizeUsPhone } from "./member-phone.ts";
+import { isValidMemberEmail, normalizeMemberPhone } from "./member-phone.ts";
 
 const COOKIE_NAME = "public_member_access";
-export const PUBLIC_MEMBER_ACCESS_TTL_SECONDS = 15 * 60;
+// Matches the verified member context token lifetime (see member-context.ts).
+export const PUBLIC_MEMBER_ACCESS_TTL_SECONDS = 60 * 60;
 
 function secret(): string | null {
   return process.env.SESSION_SECRET || null;
@@ -86,7 +87,7 @@ export function getVerifiedPublicIdentity(req: Request): PublicMemberIdentity | 
       expiresAt?: unknown;
     } =
       JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    const phone = normalizeUsPhone(claims.phone);
+    const phone = normalizeMemberPhone(claims.phone);
     const email = typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "";
     const memberIdValid = claims.memberId === undefined ||
       (Number.isSafeInteger(claims.memberId) && (claims.memberId as number) > 0);
@@ -126,6 +127,6 @@ export async function verifyPublicMemberAccess(req: Request, memberId: number): 
     .where(eq(membersTable.id, memberId))
     .limit(1);
   return Boolean(member &&
-    normalizeUsPhone(member.phone) === identity.phone &&
+    normalizeMemberPhone(member.phone) === identity.phone &&
     member.email?.trim().toLowerCase() === identity.email);
 }
