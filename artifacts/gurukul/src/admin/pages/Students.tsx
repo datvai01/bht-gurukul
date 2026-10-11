@@ -537,7 +537,7 @@ function RegisteredSubjectsEditor({ student, onSaved }: { student: Student; onSa
                           <select className={inputCls} value={row.sectionId ?? ""} onChange={event => updateRow(row.key, { sectionId: event.target.value ? Number(event.target.value) : null })} data-testid={`select-subject-section-${row.key}`}>
                             <option value="">No section</option>
                             {row.sectionId && !selectedLevel?.sections.some(section => section.id === row.sectionId) && <option value={row.sectionId}>Unavailable: {original?.section || `Section ${row.sectionId}`}</option>}
-                            {selectedLevel?.sections.map(section => <option key={section.id} value={section.id}>{section.sectionName}{section.schedule ? ` — ${section.schedule}` : ""}</option>)}
+                            {selectedLevel?.sections.map(section => <option key={section.id} value={section.id}>{section.sectionName}</option>)}
                           </select>
                           {fieldErrors[index].section && <p className="text-[10px] text-red-600 mt-1" data-testid={`error-subject-section-${row.key}`}>{fieldErrors[index].section}</p>}
                         </div>
@@ -777,7 +777,7 @@ function Field({ label, required, children }: { label: string; required?: boolea
 }
 
 type EnrollmentDraft = { key: number; courseId: number | ""; levelId: number | ""; sectionId: number | ""; amountDue: string; };
-type MetaSection  = { id: number; sectionName: string; schedule: string };
+type MetaSection  = { id: number; sectionName: string };
 type MetaLevel    = { id: number; levelNumber: number; className: string; sections: MetaSection[] };
 type MetaCourse   = { id: number; name: string; icon: string; fee?: number | null; levels: MetaLevel[] };
 type Meta         = { nextCode?: string; courses: MetaCourse[] };
@@ -1361,7 +1361,7 @@ function RegisterStudentPanel({ onClose, onRegistered }: { onClose: () => void; 
                           <Field label="Section">
                             <select value={enr.sectionId} onChange={e => updateEnrollment(enr.key, { sectionId: e.target.value ? Number(e.target.value) : "" })} className={selectCls}>
                               <option value="">— Unassigned —</option>
-                              {sl.sections.map(s => <option key={s.id} value={s.id}>{s.sectionName}{s.schedule ? ` · ${s.schedule}` : ""}</option>)}
+                              {sl.sections.map(s => <option key={s.id} value={s.id}>{s.sectionName}</option>)}
                             </select>
                           </Field>
                         )}

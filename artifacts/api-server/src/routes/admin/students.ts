@@ -279,7 +279,6 @@ router.get("/meta", async (req, res) => {
         className:   courseLevelsTable.className,
         sectionId:   courseSectionsTable.id,
         sectionName: courseSectionsTable.sectionName,
-        schedule:    courseSectionsTable.schedule,
       })
       .from(coursesTable)
       .innerJoin(courseLevelsTable, eq(courseLevelsTable.courseId, coursesTable.id))
@@ -293,7 +292,7 @@ router.get("/meta", async (req, res) => {
       ))
       .orderBy(asc(coursesTable.name), asc(courseLevelsTable.levelNumber), asc(courseSectionsTable.sectionName));
 
-    const courseMap = new Map<number, { id: number; name: string; icon: string; fee: number | null; schedule: string; ageGroup: string; levels: Map<number, { id: number; levelNumber: number; className: string; sections: { id: number; sectionName: string; schedule: string }[] }> }>();
+    const courseMap = new Map<number, { id: number; name: string; icon: string; fee: number | null; schedule: string; ageGroup: string; levels: Map<number, { id: number; levelNumber: number; className: string; sections: { id: number; sectionName: string }[] }> }>();
     for (const r of rows) {
       if (!courseMap.has(r.courseId)) {
         courseMap.set(r.courseId, { id: r.courseId, name: r.courseName, icon: r.courseIcon ?? "", fee: r.courseFee != null ? parseFloat(r.courseFee) : null, schedule: r.courseSchedule?.trim() ?? "", ageGroup: r.ageGroup, levels: new Map() });
@@ -303,7 +302,7 @@ router.get("/meta", async (req, res) => {
         course.levels.set(r.levelId, { id: r.levelId, levelNumber: r.levelNumber, className: r.className, sections: [] });
       }
       if (r.sectionId) {
-        course.levels.get(r.levelId)!.sections.push({ id: r.sectionId, sectionName: r.sectionName!, schedule: r.schedule ?? "" });
+        course.levels.get(r.levelId)!.sections.push({ id: r.sectionId, sectionName: r.sectionName! });
       }
     }
 

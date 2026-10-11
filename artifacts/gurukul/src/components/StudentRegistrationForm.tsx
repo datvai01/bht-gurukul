@@ -174,7 +174,7 @@ function focusFirstFieldError() {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type MetaSection  = { id: number; sectionName: string; schedule: string };
+type MetaSection  = { id: number; sectionName: string };
 type MetaLevel    = { id: number; levelNumber: number; className: string; sections: MetaSection[] };
 // schedule: the subject's class timing, set by the administrator and shared by all levels.
 export type MetaCourse = { id: number; name: string; icon: string; fee?: number | null; schedule?: string; ageGroup?: string | null; levels: MetaLevel[] };
@@ -227,11 +227,11 @@ type LinkedStudent = {
   volunteerArea: string | null;
 };
 
+// Parents choose a course and level only; section (time slot) assignment is done by administrators.
 type EnrollmentDraft = {
   key:       number;
   courseId:  number | "";
   levelId:   number | "";
-  sectionId: number | "";
   amountDue: string;
 };
 
@@ -545,7 +545,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [registrationCloseDate, setRegistrationCloseDate] = useState("");
 
   const [enrollments, setEnrollments] = useState<EnrollmentDraft[]>([
-    { key: 0, courseId: "", levelId: "", sectionId: "", amountDue: "" },
+    { key: 0, courseId: "", levelId: "", amountDue: "" },
   ]);
   const [draftKey, setDraftKey] = useState(1);
   // Admin registrations fall back to today if the Session Start Date is not configured.
@@ -687,7 +687,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
 
   // ── Enrollment helpers ──
   function addEnrollment() {
-    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "", sectionId: "", amountDue: courseFee !== null ? courseFee.toFixed(2) : "" }]);
+    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "", amountDue: courseFee !== null ? courseFee.toFixed(2) : "" }]);
     setDraftKey(k => k + 1);
   }
   function removeEnrollment(key: number) {
@@ -707,8 +707,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       }
       if (e.key !== key) return e;
       const updated = { ...e, ...patch };
-      if (patch.courseId !== undefined) { updated.levelId = ""; updated.sectionId = ""; }
-      if (patch.levelId  !== undefined) { updated.sectionId = ""; }
+      if (patch.courseId !== undefined) { updated.levelId = ""; }
       return updated;
     }));
   }
@@ -1646,7 +1645,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         policyAccepted: policyAgreed,
         enrollments:    validEnrollments.map(e => ({
           courseLevelId: Number(e.levelId),
-          sectionId:     e.sectionId ? Number(e.sectionId) : null,
+          sectionId:     null,   // sections are assigned by administrators after registration
           // Fees are set by the administrator; only an admin may override the amount.
           ...(adminMode && e.amountDue ? { amountDue: e.amountDue } : {}),
           enrollDate:    templeToday(),
@@ -2928,7 +2927,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         <div className="space-y-3">
           {enrollments.map((enr, idx) => {
             const selectedCourse = meta?.courses.find(c => c.id === enr.courseId) ?? null;
-            const selectedLevel  = selectedCourse?.levels.find(l => l.id === enr.levelId) ?? null;
             // A course already chosen in another row cannot be chosen again.
             const takenCourseIds = new Set(enrollments.filter(other => other.key !== enr.key && other.courseId).map(other => other.courseId));
 
@@ -3004,23 +3002,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                         </option>
                         );
                       })}
-                    </select>
-                  </Field>
-                )}
-
-                {selectedLevel && selectedLevel.sections.length > 0 && (
-                  <Field label="Preferred Time Slot">
-                    <select
-                      value={enr.sectionId}
-                      onChange={e => updateEnrollment(enr.key, { sectionId: e.target.value ? Number(e.target.value) : "" })}
-                      className={selectCls}
-                    >
-                      <option value="">— No preference —</option>
-                      {selectedLevel.sections.map(s => (
-                        <option key={s.id} value={s.id}>
-                          {s.sectionName}{s.schedule ? ` · ${s.schedule}` : ""}
-                        </option>
-                      ))}
                     </select>
                   </Field>
                 )}

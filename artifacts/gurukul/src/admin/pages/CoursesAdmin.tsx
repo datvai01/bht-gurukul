@@ -27,12 +27,13 @@ type LevelStudent = {
 };
 
 type CourseLevel = {
-  id: number; level: number; className: string; schedule: string; teacher: string;
+  id: number; level: number; className: string; teacher: string;
   enrolled: number; capacity: number; status: "Active" | "Inactive";
 };
 
 type AdminCourse = {
   id: number; name: string; icon: string; description: string;
+  schedule: string;   // class timing, shared by every level of the course
   curriculumYear: string | null; levels: CourseLevel[];
 };
 
@@ -52,9 +53,11 @@ const ENROLL_COLORS: Record<string, string> = {
 
 function LevelRow({
   level,
+  courseSchedule,
   readOnly,
 }: {
   level: CourseLevel;
+  courseSchedule: string;
   readOnly: boolean;
 }) {
   const [expanded,       setExpanded]       = useState(false);
@@ -98,7 +101,7 @@ function LevelRow({
             </div>
             <div>
               <div className="text-xs text-muted-foreground">Schedule</div>
-              <div className="text-xs text-secondary">{level.schedule || "TBD"}</div>
+              <div className="text-xs text-secondary">{courseSchedule || "TBD"}</div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">Teacher</div>
@@ -548,6 +551,7 @@ export default function CoursesAdmin() {
                     <LevelRow
                       key={level.id}
                       level={level}
+                      courseSchedule={course.schedule}
                       readOnly={readOnly}
                     />
                   ))}

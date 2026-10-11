@@ -54,8 +54,8 @@ export const coursesTable = pgTable("courses", {
   description: text("description").notNull(),
   ageGroup: text("age_group").notNull(),
   level: text("level").notNull(),
-  schedule: text("schedule").notNull(),
-  instructor: text("instructor").notNull(),
+  schedule: text("schedule").notNull(),     // class timing for every level and section of the course
+  instructor: text("instructor").notNull(), // course coordinator shown on the public Courses page
   icon: text("icon").notNull().default("📚"),
   learningAreas: text("learning_areas"),
   levelsDetail: text("levels_detail"),
@@ -158,7 +158,7 @@ export const courseLevelsTable = pgTable("course_levels", {
     .references(() => coursesTable.id, { onDelete: "cascade" }),
   levelNumber: integer("level_number").notNull(),  // 1–7
   className: text("class_name").notNull(),          // e.g., "Level 1"
-  schedule: text("schedule"),                        // e.g., "Sundays 10–11 AM"
+  // No timing here: class timing is set once per course (courses.schedule).
   capacity: integer("capacity").notNull().default(20),
   enrolled: integer("enrolled").notNull().default(0),
   status: courseLevelStatusEnum("status").notNull().default("Active"),
@@ -390,7 +390,7 @@ export const courseSectionsTable = pgTable("course_sections", {
     .notNull()
     .references(() => courseLevelsTable.id, { onDelete: "cascade" }),
   sectionName:   text("section_name").notNull(),    // e.g., "Morning Batch", "Section A"
-  schedule:      text("schedule"),                   // e.g., "Sundays 10–11 AM"
+  // No timing here: class timing is set once per course (courses.schedule).
   capacity:      integer("capacity").notNull().default(20),
   status:        courseLevelStatusEnum("status").notNull().default("Active"),
   createdAt:     timestamp("created_at").defaultNow(),

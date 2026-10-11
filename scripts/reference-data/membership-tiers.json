@@ -1,0 +1,13 @@
+{
+  "_comment": "Membership tiers. 'annual' tiers end December 31 of the membership year; 'lifetime' tiers never expire. Fees are set by the administrator; null means not configured yet.",
+  "tiers": [
+    { "name": "Family Membership",             "category": "annual",   "fee": null, "sortOrder": 1 },
+    { "name": "Individual Membership",         "category": "annual",   "fee": null, "sortOrder": 2 },
+    { "name": "Student Membership",            "category": "annual",   "fee": null, "sortOrder": 3 },
+    { "name": "Membership Life",               "category": "lifetime", "fee": null, "sortOrder": 4 },
+    { "name": "Membership Benefactors",        "category": "lifetime", "fee": null, "sortOrder": 5 },
+    { "name": "Membership Donors",             "category": "lifetime", "fee": null, "sortOrder": 6 },
+    { "name": "Membership Patrons",            "category": "lifetime", "fee": null, "sortOrder": 7 },
+    { "name": "Permanent Founding Benefactor", "category": "lifetime", "fee": null, "sortOrder": 8 }
+  ]
+}

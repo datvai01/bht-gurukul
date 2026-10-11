@@ -33,14 +33,12 @@ router.get("/", async (req, res) => {
               .map((s) => ({
                 id:          s.id,
                 sectionName: s.sectionName,
-                schedule:    s.schedule ?? "",
                 capacity:    s.capacity,
               }));
             return {
               id:          l.id,
               levelNumber: l.levelNumber,
               className:   l.className,
-              schedule:    l.schedule ?? "",
               capacity:    l.capacity,
               sections:    lvlSections,
             };

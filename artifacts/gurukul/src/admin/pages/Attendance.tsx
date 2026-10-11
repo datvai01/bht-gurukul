@@ -14,7 +14,7 @@ import { toast } from "sonner";
 type AttStatus = "Present" | "Absent" | "Late";
 
 type RawLevel = { id: number; className: string; courseName: string; schedule: string };
-type SectionOption = { id: number; sectionName: string; schedule: string };
+type SectionOption = { id: number; sectionName: string };
 type StudentRow = { studentId: number; studentCode: string; name: string; status: AttStatus };
 type HistoryRow = {
   id: number;
@@ -479,7 +479,7 @@ export default function Attendance() {
               </label>
               {!loadingSections && sections.length === 1 ? (
                 <div className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-gray-50 text-secondary font-medium">
-                  {sections[0].sectionName}{sections[0].schedule ? ` (${sections[0].schedule})` : ""}
+                  {sections[0].sectionName}
                 </div>
               ) : (
                 <select
@@ -489,7 +489,7 @@ export default function Attendance() {
                   onChange={e => { setSelectedSection(e.target.value ? Number(e.target.value) : null); setSaved(false); }}
                 >
                   <option value="">All Students</option>
-                  {sections.map(s => <option key={s.id} value={s.id}>{s.sectionName}{s.schedule ? ` (${s.schedule})` : ""}</option>)}
+                  {sections.map(s => <option key={s.id} value={s.id}>{s.sectionName}</option>)}
                 </select>
               )}
               {selectedLevelId && !loadingSections && sections.length === 0 && (

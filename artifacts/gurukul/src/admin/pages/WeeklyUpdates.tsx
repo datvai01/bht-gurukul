@@ -30,7 +30,7 @@ type Update = {
 };
 
 type RawLevel   = { id: number; className: string; schedule: string; courseName: string; courseId: number };
-type SectionOpt = { id: number; sectionName: string; schedule: string };
+type SectionOpt = { id: number; sectionName: string };
 
 type Notice = {
   id: number;

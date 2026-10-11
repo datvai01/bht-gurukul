@@ -16,8 +16,8 @@ type Notification = {
   createdBy: string; createdAt: string; publishedAt: string | null;
 };
 
-type SectionRow = { id: number; sectionName: string; schedule: string; };
-type LevelRow   = { id: number; level: number; className: string; schedule: string; sections: SectionRow[]; };
+type SectionRow = { id: number; sectionName: string; };
+type LevelRow   = { id: number; level: number; className: string; sections: SectionRow[]; };
 type CourseRow  = { id: number; name: string; icon: string; levels: LevelRow[]; };
 
 const PRIORITY_COLORS: Record<Priority, string> = {

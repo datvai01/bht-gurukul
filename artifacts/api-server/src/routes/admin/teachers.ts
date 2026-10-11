@@ -46,7 +46,7 @@ async function buildTeacherList() {
       role:        sectionAssignmentsTable.role,
       sectionId:   courseSectionsTable.id,
       sectionName: courseSectionsTable.sectionName,
-      schedule:    courseSectionsTable.schedule,
+      schedule:    coursesTable.schedule,   // a section meets at its course's class timing
       levelName:   courseLevelsTable.className,
       courseName:  coursesTable.name,
       courseId:    coursesTable.id,

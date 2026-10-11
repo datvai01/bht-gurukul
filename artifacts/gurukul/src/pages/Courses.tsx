@@ -26,8 +26,8 @@ const cardItem = {
 
 type DbLevel = {
   id: number; levelNumber: number; className: string;
-  schedule: string; capacity: number;
-  sections: { id: number; sectionName: string; schedule: string; capacity: number }[];
+  capacity: number;
+  sections: { id: number; sectionName: string; capacity: number }[];
 };
 
 type Course = {
@@ -150,10 +150,10 @@ export default function Courses() {
                       </div>
                     )}
 
-                    {/* Instructor */}
+                    {/* Course coordinator (the subject's Gurukul vice-president) */}
                     <div className="flex items-center gap-2 text-sm text-foreground/70 pt-1">
                       <User className="w-4 h-4 text-primary" />
-                      <span className="font-medium">Instructor:</span>
+                      <span className="font-medium">Course Coordinator:</span>
                       <span>{course.instructor}</span>
                     </div>
 

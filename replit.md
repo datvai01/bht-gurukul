@@ -144,8 +144,10 @@ course selection (one level per course, course-specific fees) → policy accepta
 **v7 additions:**
 - Primary Member details are pre-filled from the verified member record and stay editable; edits are
   validated and saved on the student registration (the membership record is not changed).
-- Class timing is set per subject (`courses.schedule`, "Class Timing" in Course Management); every level
-  of the subject uses it, and parents see it during course selection.
+- Class timing exists only on the course (`courses.schedule`, "Class Timing" in Course Management);
+  levels and sections have no timing of their own. Parents see it during course selection, and teacher
+  section assignments are blocked when two courses meet at the same time. Parents choose course and
+  level only; administrators assign sections. Each course shows its course coordinator.
 - New students (first registration with BHT Gurukul) pay a one-time Bag & Supplies fee, stored in
   `student_fees` (one per student). The amount is the `bag_supplies_fee` setting ($11.00 by default);
   admins record its payment in the student's Payment Details drawer.
@@ -157,6 +159,11 @@ membership fee, and a **fee on every course**. Missing values block registration
 **Schema additions:** `members.first_name`, `members.last_name` (existing names are split automatically
 at API startup), `payments.pending_reason`, `membership_payments.pending_reason`, `student_fees`. Apply with
 `pnpm --filter @workspace/db run push`.
+
+**Reference data & deployment:** `pnpm --filter @workspace/scripts run bootstrap` loads settings, the
+course catalogue, membership tiers and the super admin from `scripts/reference-data/`;
+`reset-transactional -- --yes` clears transactional data. Demo data is only seeded at startup when
+`SEED_DEMO_DATA=true`. Azure steps are in `DEPLOYMENT.md`.
 
 **Local development (outside Replit):** the Vite dev server proxies `/api` when `API_PROXY_TARGET` is set,
 e.g. `PORT=5173 BASE_PATH=/ API_PROXY_TARGET=http://localhost:3001 pnpm --filter @workspace/gurukul run dev`.

@@ -1,0 +1,17 @@
+{
+  "_comment": "Portal settings loaded by the bootstrap script. Existing values are never overwritten unless --overwrite-settings is passed. Blank values must be set by the administrator on the Settings screen before public registration opens. Stripe keys are entered on the Settings screen and are never stored in this repository.",
+  "settings": {
+    "active_curriculum_year": "2027-28",
+    "active_curriculum_years_list": "2026-2027,2027-2028",
+    "registration_curriculum_year": "2027-2028",
+    "registration_curriculum_years_list": "2026-2027,2027-2028",
+    "registration_open_date": "",
+    "registration_close_date": "",
+    "session_start_date": "",
+    "session_end_date": "",
+    "stripe_membership_fee": "",
+    "stripe_course_fee": "",
+    "bag_supplies_fee": "11",
+    "audit_retention_days": "7"
+  }
+}

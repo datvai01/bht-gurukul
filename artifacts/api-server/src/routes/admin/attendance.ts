@@ -90,7 +90,7 @@ router.get("/levels", async (req, res) => {
     .select({
       id:          courseLevelsTable.id,
       className:   courseLevelsTable.className,
-      schedule:    courseLevelsTable.schedule,
+      schedule:    coursesTable.schedule,   // class timing is set per course
       courseName:  coursesTable.name,
       courseId:    coursesTable.id,
       levelNumber: courseLevelsTable.levelNumber,

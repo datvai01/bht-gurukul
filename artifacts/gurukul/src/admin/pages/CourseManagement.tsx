@@ -3,7 +3,7 @@ import { usePortalSettings } from "../contexts/PortalSettingsContext";
 import {
   Plus, Edit2, Trash2, Archive, ArchiveRestore, ChevronDown, ChevronRight,
   BookOpen, Layers, Tag, GraduationCap, Phone, Mail, AlertCircle,
-  X, Save, PlusCircle, Clock,
+  X, Save, PlusCircle,
 } from "lucide-react";
 import { adminApi } from "@/lib/adminApi";
 import { useAuth } from "../AuthContext";
@@ -15,13 +15,13 @@ import { toast } from "sonner";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type SectionRow = {
-  id: number; sectionName: string; schedule: string;
+  id: number; sectionName: string;
   capacity: number; status: string;
   teachers?: { id: number; name: string; role: string }[];
 };
 
 type LevelRow = {
-  id: number; level: number; className: string; schedule: string;
+  id: number; level: number; className: string;
   teacher: string; enrolled: number; capacity: number; status: string;
   sections: SectionRow[];
 };
@@ -29,6 +29,7 @@ type LevelRow = {
 type CourseRow = {
   id: number; name: string; icon: string; description: string;
   schedule: string; ageGroup: string; curriculumYear: string | null;
+  instructor: string;          // course coordinator shown on the public Courses page
   fee: number | null;
   archivedAt: string | null;
   levels: LevelRow[];
@@ -108,7 +109,6 @@ function SectionChip({
       <div className="flex items-center gap-1.5">
         <Tag className="w-3 h-3 text-blue-600 shrink-0" />
         <span className="font-semibold text-blue-800">{section.sectionName}</span>
-        {section.schedule && <span className="text-blue-400 text-[10px]">· {section.schedule}</span>}
         {isAdmin && (
           <div className="ml-auto flex items-center gap-1">
             <button onClick={() => { onEdit(section); }} className="text-blue-400 hover:text-blue-700" title="Edit section">
@@ -180,41 +180,6 @@ function SectionChip({
   );
 }
 
-// ─── Time helpers (EST) ───────────────────────────────────────────────────────
-
-function timeStrTo24(str: string): string {
-  const m = str.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!m) return "";
-  let h = parseInt(m[1]);
-  const min = m[2];
-  const period = m[3].toUpperCase();
-  if (period === "PM" && h !== 12) h += 12;
-  if (period === "AM" && h === 12) h = 0;
-  return `${String(h).padStart(2, "0")}:${min}`;
-}
-
-function time24ToStr(val: string): string {
-  if (!val) return "";
-  const [h, min] = val.split(":").map(Number);
-  const period = h >= 12 ? "PM" : "AM";
-  const h12 = h % 12 || 12;
-  return `${h12}:${String(min).padStart(2, "0")} ${period}`;
-}
-
-function parseScheduleTimes(schedule: string): { start: string; end: string } {
-  const m = schedule.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–\-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
-  if (m) return { start: timeStrTo24(m[1]), end: timeStrTo24(m[2]) };
-  return { start: "", end: "" };
-}
-
-function getEasternTZ(): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    timeZoneName: "short",
-  }).formatToParts(new Date());
-  return parts.find(p => p.type === "timeZoneName")?.value ?? "EST";
-}
-
 // ─── Add/Edit Section Inline Form ─────────────────────────────────────────────
 
 function AddSectionForm({
@@ -223,19 +188,10 @@ function AddSectionForm({
   levelId: number; existing?: SectionRow;
   onSave: (s: SectionRow) => void; onCancel: () => void;
 }) {
-  const tz                  = getEasternTZ();
+  // Sections have no timing of their own: they meet at the course's class timing.
   const [name, setName]     = useState(existing?.sectionName ?? "");
-  const parsed              = parseScheduleTimes(existing?.schedule ?? "");
-  const [startTime, setStartTime] = useState(parsed.start);
-  const [endTime,   setEndTime]   = useState(parsed.end);
   const [cap, setCap]       = useState(String(existing?.capacity ?? 20));
   const [saving, setSaving] = useState(false);
-
-  const schedValue = startTime && endTime
-    ? `${time24ToStr(startTime)} – ${time24ToStr(endTime)} ${tz}`
-    : startTime
-    ? `${time24ToStr(startTime)} ${tz}`
-    : "";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -244,9 +200,9 @@ function AddSectionForm({
     try {
       let s: SectionRow;
       if (existing) {
-        s = await adminApi.courses.updateSection(existing.id, { sectionName: name.trim(), schedule: schedValue, capacity: existing.capacity }) as SectionRow;
+        s = await adminApi.courses.updateSection(existing.id, { sectionName: name.trim(), capacity: existing.capacity }) as SectionRow;
       } else {
-        s = await adminApi.courses.addSection(levelId, { sectionName: name.trim(), schedule: schedValue, capacity: Number(cap) }) as SectionRow;
+        s = await adminApi.courses.addSection(levelId, { sectionName: name.trim(), capacity: Number(cap) }) as SectionRow;
       }
       toast.success(existing ? "Section updated!" : "Section added!");
       onSave(s);
@@ -262,37 +218,9 @@ function AddSectionForm({
       <Input
         value={name}
         onChange={e => setName(e.target.value)}
-        placeholder="Section name e.g. Morning Batch"
+        placeholder="Section name e.g. Section A"
         className="h-8 text-xs w-44"
       />
-
-      {/* Start time */}
-      <div className="relative flex items-center">
-        <Clock className="absolute left-2 w-3 h-3 text-muted-foreground pointer-events-none" />
-        <input
-          type="time"
-          value={startTime}
-          onChange={e => setStartTime(e.target.value)}
-          className="h-8 pl-7 pr-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-primary w-32"
-          title={`Start time (${tz})`}
-        />
-      </div>
-
-      <span className="text-xs text-muted-foreground self-center">–</span>
-
-      {/* End time */}
-      <div className="relative flex items-center">
-        <Clock className="absolute left-2 w-3 h-3 text-muted-foreground pointer-events-none" />
-        <input
-          type="time"
-          value={endTime}
-          onChange={e => setEndTime(e.target.value)}
-          className="h-8 pl-7 pr-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-primary w-32"
-          title={`End time (${tz})`}
-        />
-      </div>
-
-      <span className="text-[10px] font-medium text-primary self-center">{tz}</span>
 
       {!existing && (
         <Input value={cap} onChange={e => setCap(e.target.value)} type="number" min={1} placeholder="Cap" className="h-8 text-xs w-20" />
@@ -401,7 +329,6 @@ function LevelAccordion({
             </span>
           </div>
           <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
-            {level.schedule && <span>🕐 {level.schedule}</span>}
             <span>👩‍🏫 {level.teacher}</span>
           </div>
         </div>
@@ -579,7 +506,7 @@ function CourseFormPanel({
     icon:                editing?.icon           ?? "📚",
     ageGroup:            editing?.ageGroup       ?? "Ages 5–18",
     schedule:            editing?.schedule       ?? "Sundays 9 AM–1 PM",
-    instructor:          "TBD",
+    instructor:          editing?.instructor     ?? "TBD",
     numLevels:           editing?.levels.length  ?? 6,
     numSectionsPerLevel: 1,
     curriculumYear:      editing?.curriculumYear ?? activeCurriculumYear,
@@ -764,6 +691,10 @@ function CourseFormPanel({
               <label className="text-xs font-semibold text-secondary mb-1 block">Class Timing (all levels)</label>
               <Input value={form.schedule} onChange={e => setForm(f => ({ ...f, schedule: e.target.value }))} placeholder="e.g., Sundays 10:00 AM – 11:00 AM" />
               <p className="text-[11px] text-muted-foreground mt-1">Shown to parents during registration. Every level of this subject uses this timing.</p>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-secondary mb-1 block">Course Coordinator</label>
+              <Input value={form.instructor} onChange={e => setForm(f => ({ ...f, instructor: e.target.value }))} placeholder="e.g., Shivani Kumar" />
             </div>
           </div>
 

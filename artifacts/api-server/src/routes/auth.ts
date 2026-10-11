@@ -21,7 +21,14 @@ export async function seedSuperAdmin() {
     .limit(1);
   if (existing.length > 0) return;
 
-  const pinHash = await bcrypt.hash("JaiHanuman2026$", 10);
+  // The initial password comes from SUPER_ADMIN_INITIAL_PASSWORD. Outside production a local
+  // development default is used; production never creates the account with a built-in password.
+  const configured = process.env.SUPER_ADMIN_INITIAL_PASSWORD ?? "";
+  if (process.env.NODE_ENV === "production" && configured.length < 12) {
+    console.warn("[auth] Super admin not created: set SUPER_ADMIN_INITIAL_PASSWORD (12+ characters) or run the bootstrap script.");
+    return;
+  }
+  const pinHash = await bcrypt.hash(configured || "JaiHanuman2026$", 10);
   await db.insert(adminUsersTable).values({
     name:    "Super Admin",
     email:   SUPER_ADMIN_EMAIL,

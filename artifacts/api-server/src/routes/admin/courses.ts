@@ -120,7 +120,6 @@ async function buildAdminCourses(includeArchived = false, teacherCourseIds?: num
           .map((s) => ({
             id:          s.id,
             sectionName: s.sectionName,
-            schedule:    s.schedule ?? "",
             capacity:    s.capacity,
             status:      s.status,
             teachers:    sectionTeachers
@@ -132,7 +131,6 @@ async function buildAdminCourses(includeArchived = false, teacherCourseIds?: num
           id:        l.id,
           level:     l.levelNumber,
           className: l.className,
-          schedule:  l.schedule ?? "",
           teacher:   teacherNames.join(" / ") || "TBD",
           enrolled:  countMap[l.id] ?? 0,
           capacity:  l.capacity,
@@ -237,7 +235,6 @@ router.post("/", async (req, res) => {
         courseId:    course.id,
         levelNumber: i,
         className:   `Level ${i}`,
-        schedule:    schedule ?? "",
         capacity:    20,
         enrolled:    0,
       }).returning();
@@ -246,7 +243,6 @@ router.post("/", async (req, res) => {
         await db.insert(courseSectionsTable).values({
           courseLevelId: level.id,
           sectionName:   sectionCount === 1 ? `Level ${i} – Section A` : `Level ${i} – Section ${sectionLabels[s]}`,
-          schedule:      schedule ?? "",
           capacity:      20,
         });
       }
@@ -301,10 +297,6 @@ router.put("/:id", async (req, res) => {
         fee:            feeValue,
       })
       .where(eq(coursesTable.id, id));
-    // Class timing is set per subject: every level of the course shares the course timing.
-    if (schedule !== undefined) {
-      await db.update(courseLevelsTable).set({ schedule: schedule || null }).where(eq(courseLevelsTable.courseId, id));
-    }
 
     const updated = (await buildAdminCourses(true)).find((c) => c.id === id);
     await writeAudit(req, {
@@ -387,8 +379,6 @@ router.post("/:id/levels", async (req, res) => {
   try {
     const courseId = parseInt(req.params.id);
     const { levelNumber, className, capacity } = req.body;
-    // New levels inherit the subject's class timing.
-    const [course] = await db.select({ schedule: coursesTable.schedule }).from(coursesTable).where(eq(coursesTable.id, courseId));
 
     const existing = await db
       .select()
@@ -398,14 +388,14 @@ router.post("/:id/levels", async (req, res) => {
 
     const [level] = await db
       .insert(courseLevelsTable)
-      .values({ courseId, levelNumber, className: className || `Level ${levelNumber}`, schedule: course?.schedule || null, capacity: capacity || 20, enrolled: 0 })
+      .values({ courseId, levelNumber, className: className || `Level ${levelNumber}`, capacity: capacity || 20, enrolled: 0 })
       .returning();
     await writeAudit(req, {
       moduleName: "Course Management",
       actionType: "Add",
       entityName: className || `Level ${levelNumber}`,
       entityId:   level.id,
-      newValue:   { courseId, levelNumber, className, schedule: course?.schedule ?? null, capacity },
+      newValue:   { courseId, levelNumber, className, capacity },
     });
     res.status(201).json(level);
   } catch (err) {
@@ -422,7 +412,7 @@ router.put("/levels/:id", async (req, res) => {
     const [level] = await db
       .update(courseLevelsTable)
       .set({
-        // Timing is not edited per level; it always follows the course (see PUT /:id).
+        // Levels have no timing of their own; class timing is set on the course.
         className: className || undefined,
         capacity:  capacity !== undefined ? parseInt(capacity) : undefined,
         status:    status || undefined,
@@ -480,7 +470,6 @@ router.get("/levels/:id/sections", async (req, res) => {
       .select({
         id:          courseSectionsTable.id,
         sectionName: courseSectionsTable.sectionName,
-        schedule:    courseSectionsTable.schedule,
         capacity:    courseSectionsTable.capacity,
         status:      courseSectionsTable.status,
         teachers: sql<string>`
@@ -508,19 +497,20 @@ router.get("/levels/:id/sections", async (req, res) => {
 router.post("/levels/:id/sections", async (req, res) => {
   try {
     const levelId = parseInt(req.params.id);
-    const { sectionName, schedule, capacity } = req.body;
+    // Sections have no timing of their own; class timing is set on the course.
+    const { sectionName, capacity } = req.body;
     if (!sectionName?.trim()) return res.status(400).json({ error: "Section name is required" });
 
     const [section] = await db
       .insert(courseSectionsTable)
-      .values({ courseLevelId: levelId, sectionName: sectionName.trim(), schedule: schedule || null, capacity: capacity || 20 })
+      .values({ courseLevelId: levelId, sectionName: sectionName.trim(), capacity: capacity || 20 })
       .returning();
     await writeAudit(req, {
       moduleName: "Course Management",
       actionType: "Add",
       entityName: sectionName.trim(),
       entityId:   section.id,
-      newValue:   { levelId, sectionName: sectionName.trim(), schedule, capacity },
+      newValue:   { levelId, sectionName: sectionName.trim(), capacity },
     });
     res.status(201).json(section);
   } catch (err) {
@@ -533,12 +523,11 @@ router.post("/levels/:id/sections", async (req, res) => {
 router.put("/sections/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const { sectionName, schedule, capacity, status } = req.body;
+    const { sectionName, capacity, status } = req.body;
     const [section] = await db
       .update(courseSectionsTable)
       .set({
         sectionName: sectionName?.trim() || undefined,
-        schedule:    schedule ?? undefined,
         capacity:    capacity !== undefined ? parseInt(capacity) : undefined,
         status:      status || undefined,
       })
@@ -549,7 +538,7 @@ router.put("/sections/:id", async (req, res) => {
       actionType: "Edit",
       entityName: sectionName?.trim() || `Section ${id}`,
       entityId:   id,
-      newValue:   { sectionName, schedule, capacity, status },
+      newValue:   { sectionName, capacity, status },
     });
     res.json(section);
   } catch (err) {
@@ -612,9 +601,12 @@ router.post("/sections/:id/assign", async (req, res) => {
     const { teacherId, role } = req.body;
 
     // ── Conflict check: one teacher, one place at a time ──────────────────────
+    // A section meets at its course's class timing (timing is set per course).
     const [targetSection] = await db
-      .select({ schedule: courseSectionsTable.schedule })
+      .select({ schedule: coursesTable.schedule })
       .from(courseSectionsTable)
+      .innerJoin(courseLevelsTable, eq(courseLevelsTable.id, courseSectionsTable.courseLevelId))
+      .innerJoin(coursesTable, eq(coursesTable.id, courseLevelsTable.courseId))
       .where(eq(courseSectionsTable.id, sectionId));
 
     const targetRange = parseScheduleRange(targetSection?.schedule ?? null);
@@ -624,10 +616,12 @@ router.post("/sections/:id/assign", async (req, res) => {
       const otherAssignments = await db
         .select({
           sectionName: courseSectionsTable.sectionName,
-          schedule:    courseSectionsTable.schedule,
+          schedule:    coursesTable.schedule,
         })
         .from(sectionAssignmentsTable)
         .innerJoin(courseSectionsTable, eq(sectionAssignmentsTable.sectionId, courseSectionsTable.id))
+        .innerJoin(courseLevelsTable, eq(courseLevelsTable.id, courseSectionsTable.courseLevelId))
+        .innerJoin(coursesTable, eq(coursesTable.id, courseLevelsTable.courseId))
         .where(
           and(
             eq(sectionAssignmentsTable.teacherId, teacherId),
@@ -640,7 +634,7 @@ router.post("/sections/:id/assign", async (req, res) => {
         const otherRange = parseScheduleRange(other.schedule);
         if (otherRange && timesOverlap(targetRange, otherRange)) {
           return res.status(409).json({
-            error: `Schedule conflict: this teacher is already assigned to "${other.sectionName}" (${other.schedule}), which overlaps with this section's time.`,
+            error: `Schedule conflict: this teacher is already assigned to "${other.sectionName}" (${other.schedule}), which meets at the same time as this section's course.`,
           });
         }
       }

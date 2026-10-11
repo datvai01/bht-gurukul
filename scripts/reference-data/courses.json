@@ -1,0 +1,528 @@
+[
+  {
+    "name": "Tamil",
+    "icon": "🏮",
+    "description": "Tamil classes introduce students to one of the oldest classical languages, focusing on literacy and cultural richness.",
+    "ageGroup": "5+ years",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "9:30 AM – 10:30 AM",
+    "instructor": "Padmanaban Sundaram",
+    "learningAreas": [
+      "Tamil alphabets and phonetics",
+      "Reading and writing practice",
+      "Vocabulary and sentence building",
+      "Introduction to Tamil rhymes and cultural content"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Letters and sounds"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Words and sentences"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Reading passages and writing"
+      }
+    ],
+    "outcome": "Students develop foundational proficiency in Tamil and appreciation for its heritage.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Sanskrit",
+    "icon": "🕉️",
+    "description": "Sanskrit classes provide an introduction to the ancient language of scriptures, focusing on pronunciation, vocabulary, and basic grammar.",
+    "ageGroup": "7+ years (recommended)",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "9:30 AM – 10:30 AM",
+    "instructor": "Madhu Bongani",
+    "learningAreas": [
+      "Basic Sanskrit alphabets and pronunciation",
+      "Common words and simple sentence structures",
+      "Shlokas and chants with meaning",
+      "Introduction to grammar (Sandhi, basic forms)"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Shlokas and basic words"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Sentence formation and grammar basics"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Reading simple Sanskrit texts"
+      }
+    ],
+    "outcome": "Students gain the ability to recite, understand basic Sanskrit, and connect with scriptures.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "SAT",
+    "icon": "📝",
+    "description": "SAT preparation classes offered by BHT Gurukul.",
+    "ageGroup": "High school students",
+    "level": "All levels",
+    "schedule": "9:30 AM – 10:30 AM",
+    "instructor": "Vihang Deodhar",
+    "learningAreas": null,
+    "levelsDetail": null,
+    "outcome": null,
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Music",
+    "icon": "🎵",
+    "description": "Music classes offered by BHT Gurukul.",
+    "ageGroup": "6+ years",
+    "level": "All levels",
+    "schedule": "9:30 AM – 10:30 AM",
+    "instructor": "Preetha Manmohan",
+    "learningAreas": null,
+    "levelsDetail": null,
+    "outcome": null,
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Hindi",
+    "icon": "📖",
+    "description": "Hindi classes focus on building foundational language skills while connecting students to Indian culture, stories, and traditions.",
+    "ageGroup": "5+ years",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "10:35 AM – 11:35 AM",
+    "instructor": "Shivani Kumar",
+    "learningAreas": [
+      "Reading and writing (Varnamala, words, sentences)",
+      "Basic to advanced grammar",
+      "Vocabulary building through stories and conversations",
+      "Introduction to poems, bhajans, and short essays"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Alphabets and basic words"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Sentence formation and reading"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Paragraph writing and comprehension"
+      }
+    ],
+    "outcome": "Students will be able to read, write, and communicate confidently in Hindi.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Hindu Dharma and Culture",
+    "previousNames": [
+      "Dharma"
+    ],
+    "icon": "🙏",
+    "description": "Dharma classes focus on teaching Hindu values, ethics, traditions, and spiritual knowledge in an engaging and age-appropriate way.",
+    "ageGroup": "5+ years",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "12:00 PM – 1:15 PM",
+    "instructor": "Swathi Rao & Sanchita Krishna",
+    "learningAreas": [
+      "Stories from Ramayana, Mahabharata, and Puranas",
+      "Moral values and life lessons",
+      "Introduction to festivals and their significance",
+      "Basic shlokas and prayers",
+      "Understanding of Hindu culture and traditions"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Stories and simple values"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Deeper understanding of epics and practices"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Discussions on philosophy and application in daily life"
+      }
+    ],
+    "outcome": "Students develop strong moral values, cultural awareness, and a connection to their roots.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Telugu",
+    "icon": "🌺",
+    "description": "Telugu classes aim to help students learn reading, writing, and conversational Telugu while preserving linguistic heritage.",
+    "ageGroup": "5+ years",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "1:20 PM – 2:20 PM",
+    "instructor": "Anita Yenigalla",
+    "learningAreas": [
+      "Alphabets (Varnamala) and pronunciation",
+      "Word formation and sentence construction",
+      "Reading simple passages and stories",
+      "Basic conversational Telugu"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Letters and basic vocabulary"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Reading and writing sentences"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Conversations and paragraph writing"
+      }
+    ],
+    "outcome": "Students gain confidence in reading, writing, and speaking Telugu.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Gujarati",
+    "icon": "🎨",
+    "description": "Gujarati classes help students learn reading, writing, and speaking skills while staying connected to Gujarati culture and traditions.",
+    "ageGroup": "5+ years",
+    "level": "Beginner, Intermediate & Advanced",
+    "schedule": "1:20 PM – 2:20 PM",
+    "instructor": "Samir Shah",
+    "learningAreas": [
+      "Gujarati alphabets and pronunciation",
+      "Word and sentence formation",
+      "Reading stories and simple texts",
+      "Conversational Gujarati"
+    ],
+    "levelsDetail": [
+      {
+        "name": "Beginner",
+        "desc": "Alphabets and basic words"
+      },
+      {
+        "name": "Intermediate",
+        "desc": "Reading and writing sentences"
+      },
+      {
+        "name": "Advanced",
+        "desc": "Conversation and comprehension"
+      }
+    ],
+    "outcome": "Students become comfortable communicating and reading in Gujarati.",
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 2,
+        "className": "Level 2",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 3,
+        "className": "Level 3",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 4,
+        "className": "Level 4",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 5,
+        "className": "Level 5",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 6,
+        "className": "Level 6",
+        "capacity": 20,
+        "status": "Active"
+      },
+      {
+        "levelNumber": 7,
+        "className": "Level 7",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  },
+  {
+    "name": "Nepali",
+    "icon": "🏔️",
+    "description": "Nepali language classes offered by BHT Gurukul.",
+    "ageGroup": "6+ years",
+    "level": "All levels",
+    "schedule": "1:20 PM – 2:20 PM",
+    "instructor": "TBD",
+    "learningAreas": null,
+    "levelsDetail": null,
+    "outcome": null,
+    "curriculumYear": "2027-28",
+    "fee": null,
+    "levels": [
+      {
+        "levelNumber": 1,
+        "className": "Level 1",
+        "capacity": 20,
+        "status": "Active"
+      }
+    ]
+  }
+]

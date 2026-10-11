@@ -13,10 +13,14 @@ import { logger } from "./logger";
  * entered through the admin portal.
  */
 export async function seedIfEmpty() {
+  // Demo data is opt-in (SEED_DEMO_DATA=true) so a cleaned database stays clean. Real reference
+  // data is loaded with the bootstrap script (pnpm --filter @workspace/scripts run bootstrap).
+  if (process.env.SEED_DEMO_DATA !== "true") return;
+
   // Section seeding always runs independently (idempotent check inside)
   await seedSectionsIfEmpty();
 
-  // Never repopulate a freshly cleaned production database with demo records.
+  // Never repopulate a production database with demo records.
   if (process.env.NODE_ENV !== "production") {
     await seedStudentsIfEmpty();
     await patchStudentData();
@@ -186,24 +190,13 @@ export async function seedIfEmpty() {
 
     logger.info("Courses seeded.");
 
-    // Seed 7 level slots per course (enrolled = 0, no dummy data)
-    const schedules: Record<string, string> = {
-      Hindi: "Sundays 10:00–11:00 AM",
-      Dharma: "Sundays 9:00–10:00 AM",
-      Telugu: "Saturdays 10:00–11:00 AM",
-      Tamil: "Saturdays 11:00–12:00 PM",
-      Sanskrit: "Sundays 11:00 AM–12:00 PM",
-      Gujarati: "Saturdays 12:00–1:00 PM",
-    };
-
+    // Seed 7 level slots per course (enrolled = 0, no dummy data). Levels use the course timing.
     for (const course of inserted) {
-      const schedule = schedules[course.name] ?? "";
       for (let i = 1; i <= 7; i++) {
         await db.insert(courseLevelsTable).values({
           courseId: course.id,
           levelNumber: i,
           className: `Level ${i}`,
-          schedule,
           capacity: 20,
           enrolled: 0,
           status: "Active",
@@ -251,13 +244,13 @@ async function seedSectionsIfEmpty() {
     for (const level of levels) {
       if (level.levelNumber === 1 || level.levelNumber === 2) {
         sections.push(
-          { courseLevelId: level.levelId, sectionName: "Morning Batch",   schedule: "9:00 AM – 10:00 AM",   capacity: 20, status: "Active" },
-          { courseLevelId: level.levelId, sectionName: "Afternoon Batch", schedule: "10:15 AM – 11:15 AM", capacity: 20, status: "Active" },
+          { courseLevelId: level.levelId, sectionName: "Section A", capacity: 20, status: "Active" },
+          { courseLevelId: level.levelId, sectionName: "Section B", capacity: 20, status: "Active" },
         );
       } else if (level.levelNumber === 3) {
         sections.push(
-          { courseLevelId: level.levelId, sectionName: "Saturday Section", schedule: "Saturdays 9:00 AM", capacity: 25, status: "Active" },
-          { courseLevelId: level.levelId, sectionName: "Sunday Section",   schedule: "Sundays 9:00 AM",   capacity: 25, status: "Active" },
+          { courseLevelId: level.levelId, sectionName: "Section A", capacity: 25, status: "Active" },
+          { courseLevelId: level.levelId, sectionName: "Section B", capacity: 25, status: "Active" },
         );
       }
     }
