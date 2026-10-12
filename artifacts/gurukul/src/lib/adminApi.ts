@@ -393,4 +393,46 @@ export const adminApi = {
     deleteLog:     (id: number) => request("DELETE", `/messaging/messages/${id}`),
     dailyStats:    () => request<{ sentToday: number; limit: number; totalMessages: number; totalLimit: number }>("GET", "/messaging/daily-stats"),
   },
+  // "Send Email" from Student and Member Management. Addresses are resolved on the server from ids.
+  bulkEmail: {
+    recipients: (source: BulkEmailSource, ids: number[]) =>
+      request<BulkEmailRecipients>("POST", "/bulk-email/recipients", { source, ids }),
+    preview: (subject: string, html: string) =>
+      request<{ subject: string; html: string; text: string }>("POST", "/bulk-email/preview", { subject, html }),
+    send: (data: { source: BulkEmailSource; ids: number[]; subject: string; html: string; requestId: string }) =>
+      request<BulkEmailStatus>("POST", "/bulk-email/send", data),
+    status: (id: number) => request<BulkEmailStatus>("GET", `/bulk-email/${id}`),
+    retry: (id: number) => request<BulkEmailStatus>("POST", `/bulk-email/${id}/retry`, {}),
+  },
+};
+
+export type BulkEmailSource = "students" | "members";
+
+export type BulkEmailRecipients = {
+  selectedCount: number;
+  recipientCount: number;
+  duplicateCount: number;
+  missingCount: number;
+  notFoundCount: number;
+  recipients: { email: string; names: string[] }[];
+  missing: { id: number; name: string }[];
+};
+
+export type BulkEmailStatus = {
+  id: number;
+  source: BulkEmailSource;
+  subject: string;
+  status: "sending" | "sent" | "partial" | "failed";
+  sentByName: string;
+  createdAt: string;
+  completedAt: string | null;
+  selectedCount: number;
+  recipientCount: number;
+  duplicateCount: number;
+  missingCount: number;
+  skippedCount: number;
+  sentCount: number;
+  failedCount: number;
+  pendingCount: number;
+  failures: { email: string; names: string; error: string }[];
 };

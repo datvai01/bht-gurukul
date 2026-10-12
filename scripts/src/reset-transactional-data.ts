@@ -20,7 +20,7 @@ const TRANSACTIONAL_TABLES = [
   "teachers", "teacher_assignments", "section_assignments", "portal_users", "teacher_notes",
   // Content and communication
   "announcements", "events", "testimonials", "weekly_updates", "parent_notifications",
-  "admin_messages", "email_logs", "contacts", "admin_tasks",
+  "admin_messages", "email_logs", "bulk_emails", "bulk_email_recipients", "contacts", "admin_tasks",
   // Operations and logs
   "inventory", "audit_logs",
 ];

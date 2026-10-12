@@ -14,6 +14,9 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { formatUSPhone } from "@/lib/validators";
 import { membershipExpiryLabel, membershipStatus, templeYear } from "@/lib/membership";
+import { SelectionBar } from "../components/email/SelectionBar";
+import { SendEmailDialog } from "../components/email/SendEmailDialog";
+import { addAll, allSelected, hiddenCount, keepExisting, toggleId, togglePage } from "../components/email/selection";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1016,6 +1019,12 @@ function DetailPanel({ member, onClose, onEdit, onDelete, onRenew, onValidate, o
 export default function Members() {
   const { user } = useAuth();
   const canEdit = canAccess(user?.role ?? "teacher", "members");
+  // Email goes out only with an admin or super admin session (checked again on the server).
+  const canEmail = user?.role === "admin";
+
+  // ── selection (member ids; kept across pages, sorting and filter changes)
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [emailMemberIds, setEmailMemberIds] = useState<number[] | null>(null);
 
   // ── data
   const [rawMembers, setRawMembers] = useState<Member[]>([]);
@@ -1115,6 +1124,18 @@ export default function Members() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Selection is measured against the complete filtered result (every page), not just this page.
+  const filteredIdList = useMemo(() => filtered.map(m => m.id), [filtered]);
+  const pageIdList = paginated.map(m => m.id);
+  const hiddenSelectedCount = hiddenCount(selected, new Set(filteredIdList));
+  const allFilteredSelected = allSelected(selected, filteredIdList);
+  const allPageSelected = allSelected(selected, pageIdList);
+  const somePageSelected = pageIdList.some(id => selected.has(id));
+  // Drop selections for members that no longer exist after a reload.
+  useEffect(() => {
+    setSelected(prev => keepExisting(prev, rawMembers.map(m => m.id)) as Set<number>);
+  }, [rawMembers]);
 
   const activeFilterCount = [
     statusFilter !== "all",
@@ -1220,6 +1241,18 @@ export default function Members() {
           {canEdit && (
             <Button onClick={openAdd} size="sm" className="gap-1.5 rounded-xl text-xs h-9">
               <Plus className="w-3.5 h-3.5" /> Add Member
+            </Button>
+          )}
+          {canEmail && (
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setEmailMemberIds([...selected])}
+              disabled={selected.size === 0}
+              title={selected.size === 0 ? "Select members to email" : undefined}
+              className="gap-1.5 rounded-xl text-xs h-9"
+              data-testid="button-send-email"
+            >
+              <Mail className="w-3.5 h-3.5" /> Send Email{selected.size > 0 ? ` (${selected.size})` : ""}
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={exportCSV} className="gap-1.5 rounded-xl text-xs h-9">
@@ -1350,12 +1383,33 @@ export default function Members() {
         </div>
       )}
 
+      <SelectionBar
+        noun="member"
+        selectedCount={selected.size}
+        hiddenCount={hiddenSelectedCount}
+        filteredCount={filtered.length}
+        allFilteredSelected={allFilteredSelected}
+        onSelectAllFiltered={() => setSelected(prev => addAll(prev, filteredIdList))}
+        onClear={() => setSelected(new Set())}
+      />
+
       {/* ── Table ── */}
       <div className="bg-white rounded-2xl border border-border overflow-hidden flex flex-col flex-1 min-h-0">
         <div ref={tableRef} className="overflow-auto flex-1 min-h-[320px]">
           <table className="w-full min-w-[1020px] text-xs border-collapse">
             <thead className="sticky top-0 z-10 bg-gray-50 border-b border-border shadow-sm">
               <tr>
+                <th className="px-3 py-2.5 w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all members on this page"
+                    checked={allPageSelected}
+                    ref={el => { if (el) el.indeterminate = somePageSelected && !allPageSelected; }}
+                    onChange={() => setSelected(prev => togglePage(prev, pageIdList))}
+                    className="rounded"
+                    data-testid="checkbox-select-page"
+                  />
+                </th>
                 {[
                   { label: "Member",     key: "name"       as SortKey, w: "w-48"  },
                   { label: "Contact",    noSort: true,                  w: "w-48"  },
@@ -1381,7 +1435,7 @@ export default function Members() {
             <tbody>
               {paginated.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-muted-foreground text-sm">
+                  <td colSpan={10} className="text-center py-16 text-muted-foreground text-sm">
                     No members found.
                     {canEdit && !search && activeFilterCount === 0 && (
                       <> <button onClick={openAdd} className="text-primary hover:underline ml-1">Add the first member</button></>
@@ -1394,9 +1448,20 @@ export default function Members() {
                 return (
                   <tr
                     key={m.id}
-                    className={`border-b border-border/50 hover:bg-gray-50 transition-colors cursor-pointer ${rowOverdue ? "bg-red-50/40" : ""}`}
+                    className={`border-b border-border/50 transition-colors cursor-pointer ${selected.has(m.id) ? "bg-primary/5" : rowOverdue ? "bg-red-50/40 hover:bg-gray-50" : "hover:bg-gray-50"}`}
                     onClick={() => openDetail(m)}
                   >
+                    {/* Selecting a row must not open the member details. */}
+                    <td className="px-3 py-2.5" onClick={event => event.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${m.name ?? "member"}`}
+                        checked={selected.has(m.id)}
+                        onChange={() => setSelected(prev => toggleId(prev, m.id))}
+                        className="rounded"
+                        data-testid={`checkbox-member-${m.id}`}
+                      />
+                    </td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${avatarColor(m.id)}`}>
@@ -1554,6 +1619,9 @@ export default function Members() {
       </div>
 
       {/* ── Panels & Dialogs ── */}
+      {emailMemberIds && (
+        <SendEmailDialog source="members" ids={emailMemberIds} onClose={() => setEmailMemberIds(null)} />
+      )}
       {detailLoading && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
           <div className="bg-white rounded-2xl p-8 shadow-xl text-center">

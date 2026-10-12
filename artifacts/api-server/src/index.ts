@@ -4,6 +4,7 @@ import { seedIfEmpty } from "./lib/seed";
 import { seedSuperAdmin } from "./routes/auth";
 import { startAuditPurgeScheduler } from "./routes/admin/audit";
 import { backfillMemberNameParts } from "./lib/member-name";
+import { resumeInterruptedBulkEmails } from "./lib/bulk-email-delivery";
 
 const rawPort = process.env["PORT"];
 
@@ -32,4 +33,5 @@ app.listen(port, (err) => {
     .then(count => { if (count) logger.info({ count }, "Split member names into first and last name"); })
     .catch((err) => logger.error({ err }, "Failed to backfill member first/last names"));
   startAuditPurgeScheduler(logger);
+  resumeInterruptedBulkEmails().catch((err) => logger.error({ err }, "Failed to resume interrupted bulk emails"));
 });

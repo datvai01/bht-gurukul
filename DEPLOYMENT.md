@@ -23,6 +23,9 @@ The app runs as one Node.js process: the Express API also serves the built websi
 | `MEMBER_EMAIL_PROVIDER` | `smtp` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Mail server for verification codes (for example Azure Communication Services SMTP, or Gmail with an app password). |
 
+The same email settings are used for **Send Email** on Student and Member Management, which sends one
+message per recipient; make sure the SMTP account's sending limits suit your number of families.
+
 Do **not** set `SEED_DEMO_DATA` in production. The `gmail`/`resend` providers use Replit connectors
 and do not work on Azure; use `smtp`.
 

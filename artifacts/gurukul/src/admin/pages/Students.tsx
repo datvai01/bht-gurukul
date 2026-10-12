@@ -1,6 +1,9 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { adminApi } from "@/lib/adminApi";
 import { StudentRegistrationForm } from "@/components/StudentRegistrationForm";
+import { SelectionBar } from "../components/email/SelectionBar";
+import { SendEmailDialog } from "../components/email/SendEmailDialog";
+import { addAll, allSelected, hiddenCount } from "../components/email/selection";
 import { usePortalSettings } from "../contexts/PortalSettingsContext";
 import {
   Search, Download, ChevronUp, ChevronDown, Filter, Loader2,
@@ -1158,6 +1161,9 @@ type SortKey = "id" | "name" | "grade" | "primaryCourse" | "totalPaid" | "worstP
 export default function Students() {
   const { user } = useAuth();
   const isAdmin = user ? canAccess(user.role, "dashboard") : false;
+  // Email goes out only with an admin or super admin session (checked again on the server).
+  const canEmail = user?.role === "admin";
+  const [emailStudentIds, setEmailStudentIds] = useState<number[] | null>(null);
   const { activeYearsListLong } = usePortalSettings();
 
   // ── data
@@ -1317,6 +1323,18 @@ export default function Students() {
   const allPageSelected = paginated.length > 0 && paginated.every(s => selected.has(s.id));
   const somePageSelected = paginated.some(s => selected.has(s.id));
   const selectedArray = Array.from(selected);
+  // Selections are kept by student id across pages and filters; these describe them against the
+  // complete filtered result (every page), not just the visible rows.
+  const filteredIdList = useMemo(() => filtered.map(s => s.id), [filtered]);
+  const hiddenSelectedCount = hiddenCount(selected, new Set(filteredIdList));
+  const allFilteredSelected = allSelected(selected, filteredIdList);
+  function selectAllFiltered() {
+    setSelected(prev => addAll(prev, filteredIdList));
+  }
+  function openSendEmail() {
+    const ids = rawStudents.filter(s => selected.has(s.id)).map(s => s.studentDbId);
+    if (ids.length) setEmailStudentIds(ids);
+  }
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortAsc(a => !a);
@@ -1450,6 +1468,18 @@ export default function Students() {
                 </Button>
               )}
             </>
+          )}
+          {canEmail && (
+            <Button
+              variant="outline" size="sm"
+              onClick={openSendEmail}
+              disabled={selected.size === 0}
+              title={selected.size === 0 ? "Select students to email their primary parents" : undefined}
+              className="gap-1.5 rounded-xl text-xs h-9"
+              data-testid="button-send-email"
+            >
+              <Mail className="w-3.5 h-3.5" /> Send Email{selected.size > 0 ? ` (${selected.size})` : ""}
+            </Button>
           )}
           <Button variant="outline" size="sm" onClick={exportCSV} className="gap-1.5 rounded-xl text-xs h-9">
             <Download className="w-3.5 h-3.5" /> Export CSV
@@ -1585,9 +1615,15 @@ export default function Students() {
       )}
 
       {/* ── Bulk Actions Bar ── */}
-      {selected.size > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2.5 bg-primary/5 border border-primary/20 rounded-xl shrink-0 flex-wrap">
-          <span className="text-sm font-semibold text-primary mr-2">{selected.size} selected</span>
+      <SelectionBar
+        noun="student"
+        selectedCount={selected.size}
+        hiddenCount={hiddenSelectedCount}
+        filteredCount={filtered.length}
+        allFilteredSelected={allFilteredSelected}
+        onSelectAllFiltered={selectAllFiltered}
+        onClear={() => setSelected(new Set())}
+      >
           <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs rounded-lg text-green-700 border-green-300 hover:bg-green-50"
             onClick={() => setConfirmActive(true)}>
             <UserCheck className="w-3.5 h-3.5" /> Mark Active
@@ -1602,11 +1638,7 @@ export default function Students() {
               <Trash2 className="w-3.5 h-3.5" /> Delete Selected
             </Button>
           )}
-          <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-muted-foreground hover:text-secondary">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      </SelectionBar>
 
       {/* ── Table ── */}
       <div className="bg-white rounded-2xl border border-border overflow-hidden flex flex-col flex-1 min-h-0">
@@ -1822,6 +1854,9 @@ export default function Students() {
       </div>
 
       {/* ── Panels & Dialogs ── */}
+      {emailStudentIds && (
+        <SendEmailDialog source="students" ids={emailStudentIds} onClose={() => setEmailStudentIds(null)} />
+      )}
       {showRegister && (
         <RegisterStudentPanel onClose={() => setShowRegister(false)} onRegistered={() => { setShowRegister(false); loadStudents(); }} />
       )}

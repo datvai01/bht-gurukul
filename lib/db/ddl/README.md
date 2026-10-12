@@ -1,23 +1,25 @@
 # Gurukul Portal — Database DDL
 
-This folder contains a schema-only PostgreSQL DDL snapshot of the Gurukul Portal **development** database. It contains no table data or credentials. The older, incomplete `database/schema.sql` snapshot was removed to avoid conflicting references.
+This folder contains a schema-only PostgreSQL DDL snapshot of the Gurukul Portal database, generated
+from the Drizzle schema in `lib/db/src/schema/`. It contains no table data or credentials.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `schema.sql` | Full database schema — all tables, sequences, indexes, and constraints |
+| `schema.sql` | Full database schema — enums, tables, foreign keys, unique constraints and indexes |
 
-## Tables (29 in this snapshot)
+## Tables (33)
 
 ### Core Gurukul
 | Table | Purpose |
 |-------|---------|
-| `courses` | Course catalogue (Hindi, Sanskrit, Dharma, Telugu, Tamil, Gujarati, Music) |
-| `course_levels` | Levels within each course (Level 1–7) |
-| `course_sections` | Class sections under each level (batches / time slots) |
-| `students` | Student profiles |
-| `enrollments` | Student → section enrolments |
+| `courses` | Course catalogue; class timing (`schedule`) and fee are set per course |
+| `course_levels` | Levels within each course (all levels share the course timing) |
+| `course_sections` | Class sections under each level, assigned by administrators |
+| `students` | Student profiles, including the primary parent (Mother or Father) |
+| `student_registrations` | One registration per student per curriculum year |
+| `enrollments` | Student → course level (and optional section) for a registration |
 | `teachers` | Teacher and teaching assistant profiles |
 | `teacher_assignments` | Teacher → course assignments |
 | `section_assignments` | Teacher → section assignments |
@@ -28,15 +30,14 @@ This folder contains a schema-only PostgreSQL DDL snapshot of the Gurukul Portal
 | `attendance_records` | Per-student, per-session attendance |
 | `weekly_updates` | Teacher-published weekly class updates (shown on Parent Portal) |
 | `teacher_notes` | Private sticky notes for teachers (visible only to the author) |
-| `student_registrations` | Registration history for students |
 
 ### Portal & Auth
 | Table | Purpose |
 |-------|---------|
-| `admin_users` | Super Admin accounts (email + bcrypt password) |
+| `admin_users` | Super admin and admin accounts (password / PIN hashes) |
 | `portal_users` | Teacher / Assistant portal accounts (phone + bcrypt PIN) |
 | `portal_settings` | Global portal configuration key-value store |
-| `member_access_challenges` | Temporary member-access verification challenges |
+| `member_access_challenges` | One-time codes: member email verification, admin sign-in codes, rate limits |
 | `admin_tasks` | Admin tasks and reminders |
 | `audit_logs` | Administrative activity history |
 
@@ -45,48 +46,41 @@ This folder contains a schema-only PostgreSQL DDL snapshot of the Gurukul Portal
 |-------|---------|
 | `announcements` | Admin announcements (shown on public site and teacher portal) |
 | `events` | Gurukul events calendar |
-| `admin_messages` | Messages sent by admin to teachers / parents |
+| `admin_messages` | In-portal messages sent by admins to teachers / parents |
 | `parent_notifications` | Notification log for parent-facing communications |
-| `email_logs` | SMTP email delivery log |
+| `bulk_emails` | "Send Email" from Student / Member Management: one row per send (email audit log) |
+| `bulk_email_recipients` | Per-address delivery status for each send (used to retry failures only) |
+| `email_logs` | Legacy email log (no longer written by the application) |
 | `contacts` | Contact form submissions |
 
 ### Membership & Finance
 | Table | Purpose |
 |-------|---------|
-| `members` | Temple membership records (used for Parent Portal phone verification) |
-| `membership_payments` | Annual membership fee records |
-| `payments` | Student fee payment records |
+| `members` | Temple membership records (first/last name, address, spouse, validation) |
+| `membership_tiers` | Membership types (annual and lifetime tiers) |
+| `membership_payments` | One membership fee row per member per year (with discount) |
+| `payments` | Student course fee records |
+| `student_fees` | One-time student fees such as Bag & Supplies |
 | `inventory` | Gurukul inventory / asset tracking |
 | `testimonials` | Parent / student testimonials shown on public website |
 
 ## Regenerating the DDL
 
-Run from the project root against the development database (not production):
+Run from `lib/db` after changing the Drizzle schema (no database connection is needed):
 
 ```bash
-PGPASSWORD=<password> pg_dump \
-  --host=<host> \
-  --username=<user> \
-  --dbname=<dbname> \
-  --schema-only \
-  --no-owner \
-  --no-privileges \
-  -F p \
-  > lib/db/ddl/schema.sql
+npx drizzle-kit export --dialect postgresql --schema ./src/schema/index.ts > ddl/schema.sql
 ```
 
-Or use the `DATABASE_URL` environment variable directly:
+Then put back the three header comment lines at the top of `schema.sql`.
+
+## Applying schema changes
+
+This DDL is a reference snapshot, not a migration. Apply schema changes to a database with:
 
 ```bash
-pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges > lib/db/ddl/schema.sql
+pnpm --filter @workspace/db run push
 ```
 
-## ORM
-
-The database is managed via [Drizzle ORM](https://orm.drizzle.team/). Application schema definitions live in:
-
-```
-lib/db/src/schema/
-```
-
-This DDL is a reference snapshot, not an automatic migration or a command to run against a populated database. Review changes before applying any development schema change. Production schema updates for the managed database happen through Replit's Publish flow.
+On an existing database, answer **No** if it ever offers to truncate or delete data. See
+`DEPLOYMENT.md` for the production (Azure) steps.

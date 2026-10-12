@@ -18,6 +18,7 @@ import backfillRouter from "./backfill";
 import auditRouter from "./audit";
 import adminTasksRouter from "./admin-tasks";
 import dashboardStatsRouter from "./dashboard-stats";
+import bulkEmailRouter from "./bulk-email";
 
 const router: IRouter = Router();
 
@@ -40,5 +41,6 @@ router.use("/teacher-notes", teacherNotesRouter);
 router.use("/backfill", backfillRouter);
 router.use("/audit", auditRouter);
 router.use("/tasks", adminTasksRouter);
+router.use("/bulk-email", bulkEmailRouter);
 
 export default router;

@@ -19,3 +19,5 @@
 
 export * from "./gurukul";
 export * from "./member-access";
+export * from "./bulk-email";
+

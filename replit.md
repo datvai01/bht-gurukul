@@ -184,6 +184,30 @@ e.g. `PORT=5173 BASE_PATH=/ API_PROXY_TARGET=http://localhost:3001 pnpm --filter
 With `MEMBER_EMAIL_PROVIDER=console` (development only, ignored in production) verification codes are
 written to the API log instead of being emailed.
 
+## Send Email (Student and Member Management)
+
+Admins (admin / super admin session) can tick rows on Student Management or Member Management and
+choose **Send Email**. Selections are kept by record id across pages, sorting and filters; **Select all
+N filtered results** selects every matching record on every page.
+
+- Recipients are resolved on the server from the selected ids (`routes/admin/bulk-email.ts`):
+  members → member email; students → the primary parent's email on the student record, or the linked
+  member's email when it is missing. Addresses are deduplicated case-insensitively; records without a
+  valid email are excluded and reported.
+- Each address gets its own email (no shared To/CC/BCC). Delivery runs in the background
+  (`lib/bulk-email-delivery.ts`); each recipient row is claimed before sending, so nobody is emailed
+  twice. A repeated submission with the same request id returns the original send.
+- `bulk_emails` is the email audit log (sender, time, page, subject, counts, status) and
+  `bulk_email_recipients` holds per-address status; **Retry failed** resends only failed addresses.
+  Each send is also written to the audit log (Communication Hub).
+- The message is sanitized with `sanitize-html` (paragraphs, bold/italic/underline, lists, links).
+- Local testing: with `MEMBER_EMAIL_PROVIDER=console`, messages are logged as "DEV: email (not sent)",
+  and addresses ending in `.invalid` fail on purpose. Tests:
+  `node --test artifacts/api-server/src/lib/bulk-email-content.test.mjs`,
+  `node --test artifacts/gurukul/src/admin/components/email/selection.test.mjs`, and against a running
+  API `node --test artifacts/api-server/test/bulk-email.integration.mjs` (needs `DATABASE_URL`,
+  `TEST_BASE_URL`, `API_LOG_FILE`).
+
 ## Structure
 
 ```text
