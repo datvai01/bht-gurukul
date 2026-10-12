@@ -353,7 +353,7 @@ router.post("/", async (req, res) => {
     const verifiedAdmin = await getVerifiedAdmin(req);
     const {
       studentCode, firstName, lastName, dob, grade, isNewStudent,
-      curriculumYear, memberId, primaryMemberRole, memberContextToken,
+      memberId, primaryMemberRole, memberContextToken,
       motherName, motherPhone, motherEmail, motherEmployer,
       fatherName, fatherPhone, fatherEmail, fatherEmployer,
       address, volunteerParent, volunteerArea,
@@ -371,7 +371,7 @@ router.post("/", async (req, res) => {
       membershipFeeDecision?: string;
       advanceMembershipRenewal?: boolean;
       policyAccepted?: boolean;
-      enrollments: { courseLevelId: number; sectionId?: number | null; enrollDate?: string; amountDue?: string }[];
+      enrollments: { courseLevelId: number; sectionId?: number | null; enrollDate?: string }[];
     };
 
     const settingRows = await db.select({ key: portalSettingsTable.key, value: portalSettingsTable.value })
@@ -388,14 +388,12 @@ router.post("/", async (req, res) => {
     const bagSuppliesRow = settingRows.find(row => row.key === "bag_supplies_fee");
     const bagSuppliesFee = bagSuppliesRow ? configuredFee(bagSuppliesRow.value) : 11;
 
-    // The current curriculum year is server-owned for unauthenticated/public registrations.
+    // The curriculum year is server-owned: every registration is for the configured year.
     const [configuredYear] = await db
       .select({ value: portalSettingsTable.value })
       .from(portalSettingsTable)
       .where(eq(portalSettingsTable.key, "registration_curriculum_year"));
-    const effectiveCurriculumYear = verifiedAdmin
-      ? (curriculumYear?.trim() || configuredYear?.value?.trim() || "")
-      : (configuredYear?.value?.trim() || "");
+    const effectiveCurriculumYear = configuredYear?.value?.trim() || "";
     if (!effectiveCurriculumYear) {
       return res.status(503).json({ error: "The current registration year is not configured." });
     }
@@ -435,10 +433,12 @@ router.post("/", async (req, res) => {
     )) {
       return res.status(400).json({ error: "Choose valid active course levels for all enrollments." });
     }
-    if (!verifiedAdmin && enrollments.length === 0) {
+    // Admin and public registrations follow the same rules; administrators are only exempt from
+    // the registration window and the parent's email verification.
+    if (enrollments.length === 0) {
       return res.status(400).json({ error: "Select at least one course." });
     }
-    if (!verifiedAdmin && policyAccepted !== true) {
+    if (policyAccepted !== true) {
       return res.status(400).json({ error: "Please accept the BHT Gurukul policies before submitting the registration." });
     }
 
@@ -467,12 +467,9 @@ router.post("/", async (req, res) => {
     if (new Set(selectedCourses.map(course => course.courseId)).size !== submittedLevelIds.length) {
       return res.status(400).json({ error: "The same course cannot be selected more than once for a student." });
     }
-    // Every course needs its own configured fee; an admin may enter the amount explicitly instead.
-    const unpricedCourse = enrollments.find(enrollment => {
-      const course = courseByLevelId.get(enrollment.courseLevelId)!;
-      const adminAmount = verifiedAdmin && enrollment.amountDue != null && configuredFee(String(enrollment.amountDue)) !== null;
-      return configuredFee(course.fee) === null && !adminAmount;
-    });
+    // Every course needs its own fee set in Course Management.
+    const unpricedCourse = enrollments.find(enrollment =>
+      configuredFee(courseByLevelId.get(enrollment.courseLevelId)!.fee) === null);
     if (unpricedCourse) {
       const name = courseByLevelId.get(unpricedCourse.courseLevelId)!.courseName;
       return res.status(400).json({ error: `${name} does not have a registration fee configured yet. Please contact the administration.` });
@@ -513,20 +510,19 @@ router.post("/", async (req, res) => {
     if (primaryMemberRole !== "mother" && primaryMemberRole !== "father") {
       return res.status(400).json({ error: "Choose whether the linked member is the mother or father." });
     }
-    let isNewMember = verifiedAdmin ? membershipFeeDecision?.trim() === "New Member" : false;
-    if (!verifiedAdmin) {
-      const sessionSecret = process.env.SESSION_SECRET;
-      if (!sessionSecret) {
-        return res.status(500).json({ error: "Member context validation is unavailable because server configuration is incomplete." });
-      }
-      const validExistingMemberContext = verifyVerifiedMemberContextToken(memberContextToken, memberId, sessionSecret);
-      const validNewMemberContext = verifyNewMemberContextToken(memberContextToken, memberId, sessionSecret);
-      const hasVerifiedPublicMemberAccess = await verifyPublicMemberAccess(req, memberId);
-      if (!(validNewMemberContext || validExistingMemberContext) || !hasVerifiedPublicMemberAccess) {
-        return res.status(401).json({ error: "Member verification is required before registering a student." });
-      }
-      isNewMember = validNewMemberContext;
+    // The member must have been looked up (existing) or just created (new) in this registration.
+    // Parents also need their verified-email cookie; an admin session stands in for it.
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!sessionSecret) {
+      return res.status(500).json({ error: "Member context validation is unavailable because server configuration is incomplete." });
     }
+    const validExistingMemberContext = verifyVerifiedMemberContextToken(memberContextToken, memberId, sessionSecret);
+    const validNewMemberContext = verifyNewMemberContextToken(memberContextToken, memberId, sessionSecret);
+    const hasMemberAccess = verifiedAdmin ? true : await verifyPublicMemberAccess(req, memberId);
+    if (!(validNewMemberContext || validExistingMemberContext) || !hasMemberAccess) {
+      return res.status(401).json({ error: "Member verification is required before registering a student." });
+    }
+    const isNewMember = validNewMemberContext;
     if (advanceMembershipRenewal && isNewMember) {
       return res.status(400).json({ error: "Advance membership renewal is available to existing members only." });
     }
@@ -707,12 +703,11 @@ router.post("/", async (req, res) => {
           studentId: student.id, registrationId: registration.id,
           courseLevelId: enr.courseLevelId, sectionId: enr.sectionId ?? null, enrollDate: enr.enrollDate ?? today,
         }).returning({ id: enrollmentsTable.id });
-        // Course fees are administrator-configured; only an admin may override the amount.
+        // Course fees come from Course Management (checked above); discounts are applied on the payment record.
         const courseFeeDue = configuredFee(courseByLevelId.get(enr.courseLevelId)?.fee);
-        const adminOverride = verifiedAdmin && enr.amountDue != null ? configuredFee(String(enr.amountDue)) : null;
         await tx.insert(paymentsTable).values({
           enrollmentId: enrollment.id,
-          amountDue: (adminOverride ?? courseFeeDue ?? 0).toFixed(2),
+          amountDue: (courseFeeDue ?? 0).toFixed(2),
           amountPaid: "0.00", paymentStatus: "Pending", pendingReason: unpaidReason,
         });
       }
@@ -1461,9 +1456,11 @@ router.patch("/:code/current-registration", async (req, res): Promise<void> => {
         normalizeCurriculumYear(row.curriculumYear) === activeYearKey,
       );
       if (!registration) throw new StudentSubjectsError(404, "No registration was found for this student and member.");
-      const member = await tx.select({ id: membersTable.id }).from(membersTable)
-        .where(eq(membersTable.id, memberNumber)).limit(1);
+      const member = await tx.select({ id: membersTable.id, validationStatus: membersTable.validationStatus })
+        .from(membersTable).where(eq(membersTable.id, memberNumber)).limit(1);
       if (!member.length) throw new StudentSubjectsError(404, "The linked member no longer exists.");
+      // Same payment rule as a new registration: unvalidated members pay at the Temple Desk.
+      const unpaidReason = isValidatedMember(member[0].validationStatus) ? null : TEMPLE_DESK_VALIDATION_PAYMENT;
       const enrolledRows = await tx.select({
         id: enrollmentsTable.id, courseLevelId: enrollmentsTable.courseLevelId,
         sectionId: enrollmentsTable.sectionId, status: enrollmentsTable.status,
@@ -1496,12 +1493,27 @@ router.patch("/:code/current-registration", async (req, res): Promise<void> => {
       }
       const dobDate = parseDateOfBirth(registration.dob);
       if (!dobDate) throw new StudentSubjectsError(400, "A valid student date of birth is required.");
-      const age = getAgeOnDate(dobDate);
-      if (age > 22) throw new StudentSubjectsError(400, "Students must be 22 years old or younger to register.");
+      // Age is measured on the Session Start Date, as in a new registration (today if not set).
+      const [sessionStartRow] = await tx.select({ value: portalSettingsTable.value }).from(portalSettingsTable)
+        .where(eq(portalSettingsTable.key, "session_start_date"));
+      const sessionStartDate = sessionStartRow?.value?.trim() || "";
+      const ageReferenceDate = isIsoCalendarDate(sessionStartDate) ? sessionStartDate : templeDate();
+      const age = getAgeOnDate(dobDate, ageReferenceDate);
+      if (age > MAX_STUDENT_AGE) throw new StudentSubjectsError(400, `Students must be ${MAX_STUDENT_AGE} years old or younger to register.`);
       for (const level of levelRows) {
         const minimumAge = getMinimumCourseAge(level.ageGroup);
-        if (age < minimumAge) throw new StudentSubjectsError(400, `Student must be at least ${minimumAge} years old for this course.`);
+        if (age < minimumAge) {
+          throw new StudentSubjectsError(400, `Student must be at least ${minimumAge} years old on the session start date for this course (${level.ageGroup}).`);
+        }
       }
+      // A subject that needs a new payment must have its fee set in Course Management.
+      const courseFeeDue = (levelId: number) => {
+        const fee = configuredFee(levelRows.find(level => level.id === levelId)?.courseFee);
+        if (fee === null) {
+          throw new StudentSubjectsError(400, "A selected course does not have a registration fee configured. Set the course fee in Course Management first.");
+        }
+        return fee.toFixed(2);
+      };
       const withSection = currentDesired.filter(row => row.sectionId !== null);
       const sections = withSection.length ? await tx.select({
         id: courseSectionsTable.id, courseLevelId: courseSectionsTable.courseLevelId,
@@ -1542,8 +1554,8 @@ router.patch("/:code/current-registration", async (req, res): Promise<void> => {
             .where(eq(paymentsTable.enrollmentId, old.id)).limit(1);
           if (!payment) await tx.insert(paymentsTable).values({
             enrollmentId: old.id,
-            amountDue: levelRows.find(level => level.id === subject.courseLevelId)?.courseFee ?? "35.00",
-            amountPaid: "0.00", paymentStatus: "Pending",
+            amountDue: courseFeeDue(subject.courseLevelId),
+            amountPaid: "0.00", paymentStatus: "Pending", pendingReason: unpaidReason,
           });
           continue;
         }
@@ -1553,8 +1565,8 @@ router.patch("/:code/current-registration", async (req, res): Promise<void> => {
         }).returning({ id: enrollmentsTable.id });
         await tx.insert(paymentsTable).values({
           enrollmentId: enrollment.id,
-          amountDue: levelRows.find(level => level.id === subject.courseLevelId)?.courseFee ?? "35.00",
-          amountPaid: "0.00", paymentStatus: "Pending",
+          amountDue: courseFeeDue(subject.courseLevelId),
+          amountPaid: "0.00", paymentStatus: "Pending", pendingReason: unpaidReason,
         });
       }
       await tx.update(studentRegistrationsTable).set({ updatedAt: new Date() })

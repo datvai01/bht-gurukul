@@ -21,10 +21,17 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 Accessible at `/admin`. Three roles with role-based access control.
 
 **Login system:**
-- **Admin**: email + password (local, hardcoded) → `admin@gurukul.org` / `Admin@123`
-- **Teachers & Assistants**: phone number (10 digits) + 4-digit PIN (created by admin, stored hashed via bcryptjs in DB)
-- Smart auto-detection on the login page: entering digits switches the UI to phone+PIN mode
-- Legacy: `gurukuluser01` / `gurukuladmin` still works
+- **Super admin**: `admin@gurukul.org` + password; **admins**: 10-digit phone + 4-digit PIN (both in `admin_users`)
+- **Admin sign-in has three checks**: math CAPTCHA → password/PIN → 6-digit code emailed to the admin
+  (`POST /api/auth/admin-login`, then `POST /api/auth/admin-login/verify`). The code expires in 10 minutes,
+  allows 5 tries, can be resent after 60 seconds, and at most 5 codes are sent per hour. The super admin's code
+  goes to `SUPER_ADMIN_VERIFICATION_EMAIL` when set, otherwise to its stored email. An admin without a valid
+  email cannot sign in. With `MEMBER_EMAIL_PROVIDER=console` (local only) the code is printed to the API log
+  as "DEV: admin login verification code".
+- **Admin sessions last 2 hours** from sign-in (signed HttpOnly `admin_session` cookie); the UI signs the admin
+  out when it ends.
+- **Teachers & Assistants**: phone number (10 digits) + 4-digit PIN (created by admin, stored hashed via bcryptjs in DB);
+  no emailed code
 
 **PIN auth features:**
 - Admin creates users at `/admin/roles` (User Management) — system generates a random 4-digit PIN shown once
@@ -129,6 +136,13 @@ before OTP; new members' phone and email must not exist anywhere in BHT records)
 membership (first and last name stored separately) → student details, checked for age (≥ 6 on the Session
 Start Date), duplicate student (member + first + last name + DOB) and duplicate current-year registration →
 course selection (one level per course, course-specific fees) → policy acceptance → submit.
+
+**Admin registration** (`/admin/register` and Students → Register Student) uses the same
+form and the same server rules. Administrators differ only in that: no email code is sent to the parent,
+the registration window does not apply (age falls back to today if the Session Start Date is not set),
+and they can change subjects on a student's existing current-year registration. Fees always come from
+Course Management, policy acceptance and at least one course are required, the curriculum year is the
+configured one, and a new member's phone and email must not already exist in BHT records.
 
 **Rules enforced on the server** (`routes/admin/students.ts`, `routes/admin/members.ts`, `routes/payments.ts`):
 - One registration per student per curriculum year; parents cannot change subjects after submission

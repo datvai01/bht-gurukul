@@ -566,7 +566,7 @@ const TECH_GROUPS: TechGroup[] = [
       },
     ],
     notes: [
-      "There is no JWT or session cookie — identity is passed per-request as X-User-Email / X-User-Phone / X-User-Role / X-User-Name headers from localStorage.",
+      "Admins get a signed HttpOnly session cookie lasting 2 hours, issued only after the emailed sign-in code is verified. The UI also sends X-User-* headers from localStorage.",
       "All API routes are protected server-side: Express middleware checks the role header against a RBAC table before proceeding.",
     ],
   },
@@ -728,9 +728,9 @@ const TECH_GROUPS: TechGroup[] = [
         icon: KeyRound,
         color: "bg-red-100 text-red-700",
         items: [
-          { label: "Super Admin",   value: "Email + password (bcrypt hash, 12 rounds) stored in a dedicated admin_users table" },
+          { label: "Admin sign-in", value: "CAPTCHA, then email + password (super admin) or phone + PIN (admins), then a 6-digit code emailed to the admin" },
           { label: "Teachers",      value: "Phone number + 4-digit PIN (bcrypt hash, 10 rounds) in teacher_users.pin_hash" },
-          { label: "Session store", value: "No server-side session — auth object stored in localStorage after login and sent as request headers" },
+          { label: "Session store", value: "Admins: signed HttpOnly cookie valid for 2 hours. The auth object is also kept in localStorage and sent as request headers" },
           { label: "Headers used",  value: "X-User-Email, X-User-Phone, X-User-Role, X-User-Name — read by Express middleware" },
           { label: "Lockout",       value: "5 failed PIN attempts → account locked for 15 minutes (failed_attempts + locked_until columns)" },
           { label: "PIN visibility", value: "Plain PIN shown once in frontend banner after creation; never stored; hashed immediately at creation" },

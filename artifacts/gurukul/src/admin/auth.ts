@@ -10,7 +10,14 @@ export interface AuthUser {
   pinChanged?:       boolean;
   initials:          string;
   assignedCourseId?: number | null;
+  // Admin sessions end at this time (ISO string); teacher logins have no server session.
+  sessionExpiresAt?: string;
 }
+
+// Admin sign-in has two steps: the password or PIN, then a code emailed to the admin.
+export type LoginResult =
+  | { status: "signed-in"; user: AuthUser }
+  | { status: "code-sent"; maskedEmail: string };
 
 const AUTH_KEY = "gurukul_admin_auth_v2";
 
@@ -20,10 +27,11 @@ function saveUser(user: AuthUser) {
 
 // ── Unified login ─────────────────────────────────────────────────────────────
 // Order of checks:
-//   1. Try admin login (super admin or regular admin via adminUsersTable)
-//   2. If not found as admin AND credential is a 10-digit phone, fall back to
+//   1. Try admin login (super admin or regular admin via adminUsersTable). A correct password or
+//      PIN emails a sign-in code; verifyAdminCode() completes the sign-in.
+//   2. If the admin login rejects the credential AND it is a 10-digit phone, fall back to
 //      teacher/assistant login via portalUsersTable
-export async function adminLogin(credential: string, secret: string): Promise<AuthUser | null> {
+export async function adminLogin(credential: string, secret: string): Promise<LoginResult> {
   const clean = credential.replace(/\D/g, "");
   const isPhone = /^\d{10}$/.test(clean);
 
@@ -32,28 +40,17 @@ export async function adminLogin(credential: string, secret: string): Promise<Au
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ credential: credential.trim(), secret }),
+    credentials: "same-origin",
   });
 
   if (adminRes.ok) {
     const data = await adminRes.json();
-    const user: AuthUser = {
-      id:               data.id,
-      email:            data.email || undefined,
-      phone:            data.phone || undefined,
-      displayName:      data.name,
-      role:             data.role as UserRole,
-      isSuperAdmin:     data.isSuperAdmin ?? false,
-      pinChanged:       data.pinChanged ?? false,
-      initials:         data.initials,
-      assignedCourseId: data.assignedCourseId ?? null,
-    };
-    saveUser(user);
-    return user;
+    return { status: "code-sent", maskedEmail: data.maskedEmail };
   }
 
-  // Step 2 — Fall back to teacher / assistant login for phone credentials
-  if (isPhone) {
-    return pinLogin(clean, secret);
+  // Step 2 — Fall back to teacher / assistant login only when no admin matched the credentials
+  if (isPhone && adminRes.status === 401) {
+    return { status: "signed-in", user: await pinLogin(clean, secret) };
   }
 
   // Surface the admin login error
@@ -61,8 +58,38 @@ export async function adminLogin(credential: string, secret: string): Promise<Au
   throw new Error(body.error ?? "Login failed.");
 }
 
+// ── Emailed sign-in code for admins ───────────────────────────────────────────
+export async function verifyAdminCode(code: string): Promise<AuthUser> {
+  const res = await fetch("/api/auth/admin-login/verify", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ code: code.trim() }),
+    credentials: "same-origin",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data.error ?? "Verification failed.");
+    Object.assign(error, { status: res.status });
+    throw error;
+  }
+  const user: AuthUser = {
+    id:               data.id,
+    email:            data.email || undefined,
+    phone:            data.phone || undefined,
+    displayName:      data.name,
+    role:             data.role as UserRole,
+    isSuperAdmin:     data.isSuperAdmin ?? false,
+    pinChanged:       data.pinChanged ?? false,
+    initials:         data.initials,
+    assignedCourseId: data.assignedCourseId ?? null,
+    sessionExpiresAt: data.sessionExpiresAt,
+  };
+  saveUser(user);
+  return user;
+}
+
 // ── PIN-based login for teachers / assistants ──────────────────────────────────
-export async function pinLogin(phone: string, pin: string): Promise<AuthUser | null> {
+export async function pinLogin(phone: string, pin: string): Promise<AuthUser> {
   const res = await fetch("/api/auth/pin-login", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
@@ -123,9 +150,27 @@ export async function adminLogout(): Promise<void> {
 export function getAuthUser(): AuthUser | null {
   const raw = localStorage.getItem(AUTH_KEY);
   if (raw) {
-    try { return JSON.parse(raw) as AuthUser; } catch { /* ignore */ }
+    try {
+      const user = JSON.parse(raw) as AuthUser;
+      // An admin whose two-hour session has ended must sign in again.
+      if (isSessionExpired(user)) {
+        localStorage.removeItem(AUTH_KEY);
+        return null;
+      }
+      return user;
+    } catch { /* ignore */ }
   }
   return null;
+}
+
+export function isSessionExpired(user: AuthUser): boolean {
+  return !!user.sessionExpiresAt && Date.parse(user.sessionExpiresAt) <= Date.now();
+}
+
+// Clears the stored sign-in locally (the server session has already expired).
+export function clearStoredUser() {
+  localStorage.removeItem(AUTH_KEY);
+  localStorage.removeItem("gurukul_admin_auth");
 }
 
 export function updateStoredUser(patch: Partial<AuthUser>) {

@@ -5,7 +5,8 @@ import { adminUsersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 
 const COOKIE_NAME = "admin_session";
-const SESSION_SECONDS = 8 * 60 * 60;
+// Admin sessions last two hours from sign-in; after that the admin signs in again.
+export const SESSION_SECONDS = 2 * 60 * 60;
 
 export interface VerifiedAdmin {
   id: number;
@@ -27,16 +28,16 @@ function cookieValue(req: Request): string | null {
   return entry ? entry.slice(COOKIE_NAME.length + 1) : null;
 }
 
-export function setAdminSessionCookie(res: Response, adminId: number): void {
+/** Issues the signed session cookie and returns when it expires. */
+export function setAdminSessionCookie(res: Response, adminId: number): Date {
   const secret = sessionSecret();
   if (!secret) throw new Error("SESSION_SECRET is not configured");
-  const payload = Buffer.from(JSON.stringify({
-    adminId,
-    expiresAt: Math.floor(Date.now() / 1000) + SESSION_SECONDS,
-  })).toString("base64url");
+  const expiresAt = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+  const payload = Buffer.from(JSON.stringify({ adminId, expiresAt })).toString("base64url");
   const token = `${payload}.${signature(payload, secret)}`;
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.append("Set-Cookie", `${COOKIE_NAME}=${token}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure}`);
+  return new Date(expiresAt * 1000);
 }
 
 export function clearAdminSessionCookie(res: Response): void {

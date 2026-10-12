@@ -4,6 +4,14 @@ import { db } from "@workspace/db";
 import { portalUsersTable, adminUsersTable, teachersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { clearAdminSessionCookie, setAdminSessionCookie } from "../lib/admin-session";
+import {
+  ADMIN_CODE_TTL_SECONDS,
+  clearAdminLoginChallengeCookie,
+  maskEmail,
+  startAdminLoginChallenge,
+  verifyAdminLoginChallenge,
+} from "../lib/admin-login-challenge";
+import { isValidMemberEmail } from "../lib/member-phone";
 
 const router: IRouter = Router();
 
@@ -40,100 +48,110 @@ export async function seedSuperAdmin() {
   console.log("[auth] Super admin seeded.");
 }
 
+type AdminRow = typeof adminUsersTable.$inferSelect;
+
+// Where an admin's sign-in code is sent. The super admin signs in as admin@gurukul.org, which may
+// not be a real inbox, so SUPER_ADMIN_VERIFICATION_EMAIL can name the mailbox that receives it.
+function verificationEmailFor(admin: AdminRow): string | null {
+  const configured = admin.role === "super_admin" ? process.env.SUPER_ADMIN_VERIFICATION_EMAIL : undefined;
+  const email = (configured || admin.email || "").trim().toLowerCase();
+  return isValidMemberEmail(email) ? email : null;
+}
+
+// What the admin UI stores about the signed-in admin.
+function adminSessionBody(admin: AdminRow, sessionExpiresAt: Date) {
+  const isSuperAdmin = admin.role === "super_admin";
+  return {
+    id:               admin.id,
+    name:             admin.name,
+    email:            admin.email ?? "",
+    phone:            admin.phone ?? "",
+    role:             isSuperAdmin ? "admin" : admin.role, // front-end role for RBAC
+    dbRole:           admin.role,
+    isSuperAdmin,
+    pinChanged:       admin.pinChanged ?? false,
+    assignedCourseId: isSuperAdmin ? undefined : admin.assignedCourseId ?? null,
+    initials:         admin.name.split(" ").map((p: string) => p[0]).join("").slice(0, 2).toUpperCase(),
+    sessionExpiresAt: sessionExpiresAt.toISOString(),
+  };
+}
+
 // ── POST /api/auth/admin-login ────────────────────────────────────────────────
-// Unified admin login:
+// Step 1 of admin sign-in (the login page also requires a CAPTCHA before calling this):
 //   - credential = "admin@gurukul.org"  → super admin (email + password)
 //   - credential = 10-digit phone       → regular admin (phone + 4-digit PIN)
+// When the password or PIN is correct, a 6-digit code is emailed to the admin and the response
+// is { verificationRequired: true, maskedEmail }. No session exists until step 2 succeeds.
 router.post("/admin-login", async (req, res) => {
   clearAdminSessionCookie(res);
+  // The challenge cookie is left alone here: a throttled resend must not void the code already sent.
   try {
     const { credential, secret } = req.body as { credential?: string; secret?: string };
     if (!credential || !secret) {
       return res.status(400).json({ error: "Credential and secret are required." });
     }
 
-    const isSuperAdminAttempt = credential.toLowerCase().trim() === SUPER_ADMIN_EMAIL;
-
-    if (isSuperAdminAttempt) {
+    let admin: AdminRow | undefined;
+    if (credential.toLowerCase().trim() === SUPER_ADMIN_EMAIL) {
       // Super admin: email + password
-      const [sa] = await db
-        .select()
-        .from(adminUsersTable)
-        .where(eq(adminUsersTable.role, "super_admin"))
-        .limit(1);
-
-      if (!sa) return res.status(401).json({ error: "Invalid credentials." });
-      if (sa.status !== "active") return res.status(403).json({ error: "Account is inactive." });
-
-      const valid = await bcrypt.compare(secret, sa.pinHash);
-      if (!valid) return res.status(401).json({ error: "Invalid email or password." });
-      if (!process.env.SESSION_SECRET) {
-        return res.status(500).json({ error: "Admin session is unavailable because server configuration is incomplete." });
+      [admin] = await db.select().from(adminUsersTable)
+        .where(eq(adminUsersTable.role, "super_admin")).limit(1);
+      if (!admin) return res.status(401).json({ error: "Invalid credentials." });
+      if (admin.status !== "active") return res.status(403).json({ error: "Account is inactive." });
+      if (!(await bcrypt.compare(secret, admin.pinHash))) {
+        return res.status(401).json({ error: "Invalid email or password." });
       }
+    } else {
+      // Regular admin: phone + 4-digit PIN
+      const cleanPhone = credential.replace(/\D/g, "");
+      if (cleanPhone.length !== 10) {
+        return res.status(400).json({ error: "Credential must be the super admin email or a 10-digit phone number." });
+      }
+      if (!/^\d{4}$/.test(secret)) {
+        return res.status(400).json({ error: "PIN must be exactly 4 digits." });
+      }
+      [admin] = await db.select().from(adminUsersTable)
+        .where(eq(adminUsersTable.phone, cleanPhone)).limit(1);
+      if (!admin) return res.status(401).json({ error: "Invalid phone number or PIN." });
+      if (admin.status !== "active") return res.status(403).json({ error: "Account is inactive. Contact the super admin." });
+      if (!(await bcrypt.compare(secret, admin.pinHash))) {
+        return res.status(401).json({ error: "Invalid phone number or PIN." });
+      }
+    }
 
-      // Record login timestamp
-      await db.update(adminUsersTable)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(adminUsersTable.id, sa.id));
-
-      setAdminSessionCookie(res, sa.id);
-      return res.json({
-        id:           sa.id,
-        name:         sa.name,
-        email:        sa.email,
-        phone:        sa.phone ?? "",
-        role:         "admin",      // front-end role for RBAC
-        dbRole:       "super_admin",
-        isSuperAdmin: true,
-        pinChanged:   sa.pinChanged ?? false,
-        initials:     sa.name.split(" ").map((p: string) => p[0]).join("").slice(0, 2).toUpperCase(),
+    const email = verificationEmailFor(admin);
+    if (!email) {
+      return res.status(409).json({
+        error: "No valid email address is on file for this account, so a sign-in code cannot be sent. Ask the super admin to add one.",
       });
     }
-
-    // Regular admin: phone + 4-digit PIN
-    const cleanPhone = credential.replace(/\D/g, "");
-    if (cleanPhone.length !== 10) {
-      return res.status(400).json({ error: "Credential must be the super admin email or a 10-digit phone number." });
-    }
-    if (!/^\d{4}$/.test(secret)) {
-      return res.status(400).json({ error: "PIN must be exactly 4 digits." });
-    }
-
-    const [admin] = await db
-      .select()
-      .from(adminUsersTable)
-      .where(eq(adminUsersTable.phone, cleanPhone))
-      .limit(1);
-
-    if (!admin) return res.status(401).json({ error: "Invalid phone number or PIN." });
-    if (admin.status !== "active") return res.status(403).json({ error: "Account is inactive. Contact the super admin." });
-
-    const valid = await bcrypt.compare(secret, admin.pinHash);
-    if (!valid) return res.status(401).json({ error: "Invalid phone number or PIN." });
-    if (!process.env.SESSION_SECRET) {
-      return res.status(500).json({ error: "Admin session is unavailable because server configuration is incomplete." });
-    }
-
-    // Record login timestamp
-    await db.update(adminUsersTable)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(adminUsersTable.id, admin.id));
-
-    setAdminSessionCookie(res, admin.id);
-    return res.json({
-      id:               admin.id,
-      name:             admin.name,
-      email:            admin.email ?? "",
-      phone:            admin.phone ?? "",
-      role:             admin.role,
-      dbRole:           admin.role,
-      isSuperAdmin:     false,
-      pinChanged:       admin.pinChanged ?? false,
-      assignedCourseId: admin.assignedCourseId ?? null,
-      initials:         admin.name.split(" ").map((p: string) => p[0]).join("").slice(0, 2).toUpperCase(),
-    });
+    const started = await startAdminLoginChallenge(res, admin.id, email);
+    if (!started.ok) return res.status(started.status).json({ error: started.error });
+    return res.json({ verificationRequired: true, maskedEmail: maskEmail(email), expiresInSeconds: ADMIN_CODE_TTL_SECONDS });
   } catch (err) {
     console.error("[admin-login]", err);
+    return res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// ── POST /api/auth/admin-login/verify ─────────────────────────────────────────
+// Step 2: checks the emailed code and starts a two-hour admin session.
+router.post("/admin-login/verify", async (req, res) => {
+  clearAdminSessionCookie(res);
+  try {
+    const verified = await verifyAdminLoginChallenge(req, res, (req.body as { code?: unknown })?.code);
+    if (!verified.ok) return res.status(verified.status).json({ error: verified.error });
+
+    const [admin] = await db.select().from(adminUsersTable)
+      .where(eq(adminUsersTable.id, verified.adminId)).limit(1);
+    if (!admin || admin.status !== "active") {
+      return res.status(403).json({ error: "Account is inactive. Contact the super admin." });
+    }
+    await db.update(adminUsersTable).set({ lastLoginAt: new Date() }).where(eq(adminUsersTable.id, admin.id));
+    const sessionExpiresAt = setAdminSessionCookie(res, admin.id);
+    return res.json(adminSessionBody(admin, sessionExpiresAt));
+  } catch (err) {
+    console.error("[admin-login/verify]", err);
     return res.status(500).json({ error: "Internal server error." });
   }
 });
@@ -141,6 +159,7 @@ router.post("/admin-login", async (req, res) => {
 // ── POST /api/auth/admin-logout ───────────────────────────────────────────────
 router.post("/admin-logout", (_req, res) => {
   clearAdminSessionCookie(res);
+  clearAdminLoginChallengeCookie(res);
   res.json({ success: true });
 });
 

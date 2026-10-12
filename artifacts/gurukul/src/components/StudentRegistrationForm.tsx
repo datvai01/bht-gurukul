@@ -228,11 +228,11 @@ type LinkedStudent = {
 };
 
 // Parents choose a course and level only; section (time slot) assignment is done by administrators.
+// Course fees always come from Course Management, for parents and administrators alike.
 type EnrollmentDraft = {
   key:       number;
   courseId:  number | "";
   levelId:   number | "";
-  amountDue: string;
 };
 
 type ExistingSubjectDraft = { courseLevelId: number | ""; sectionId: number | null };
@@ -536,7 +536,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   // ── Fee settings (loaded from portal settings) ──
   // Fees come only from administrator configuration; null means not configured.
   const [membershipFee, setMembershipFee] = useState<number | null>(null);
-  const [courseFee,     setCourseFee]     = useState<number | null>(null);
   // One-time Bag & Supplies fee for new students (administrator setting; $11.00 by default).
   const [bagSuppliesFee, setBagSuppliesFee] = useState<number | null>(11);
   // Whether the student is registering with BHT Gurukul for the first time (set by the duplicate check).
@@ -545,7 +544,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
   const [registrationCloseDate, setRegistrationCloseDate] = useState("");
 
   const [enrollments, setEnrollments] = useState<EnrollmentDraft[]>([
-    { key: 0, courseId: "", levelId: "", amountDue: "" },
+    { key: 0, courseId: "", levelId: "" },
   ]);
   const [draftKey, setDraftKey] = useState(1);
   // Admin registrations fall back to today if the Session Start Date is not configured.
@@ -576,11 +575,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         const toFee = (value: string | undefined) =>
           value?.trim() && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
         const mf = toFee(s.stripe_membership_fee);
-        const cf = toFee(s.stripe_course_fee);
         setMembershipFee(mf);
-        setCourseFee(cf);
         setBagSuppliesFee(s.bag_supplies_fee === undefined ? 11 : toFee(s.bag_supplies_fee));
-        if (cf !== null) setEnrollments(prev => prev.map(e => ({ ...e, amountDue: cf.toFixed(2) })));
         // ── Registration window ──
         const rcy = s.registration_curriculum_year?.trim() || "";
         const rod = s.registration_open_date  || "";
@@ -687,7 +683,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
 
   // ── Enrollment helpers ──
   function addEnrollment() {
-    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "", amountDue: courseFee !== null ? courseFee.toFixed(2) : "" }]);
+    setEnrollments(prev => [...prev, { key: draftKey, courseId: "", levelId: "" }]);
     setDraftKey(k => k + 1);
   }
   function removeEnrollment(key: number) {
@@ -700,11 +696,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       setErrors(prev => ({ ...prev, [`level-${key}`]: "" }));
     }
     setEnrollments(prev => prev.map(e => {
-      // When the course changes, auto-set amountDue from the course's own fee (or global fallback)
-      if (patch.courseId !== undefined && patch.amountDue === undefined) {
-        const course = meta?.courses.find(c => c.id === patch.courseId);
-        patch = { ...patch, amountDue: course?.fee != null ? course.fee.toFixed(2) : courseFee !== null ? courseFee.toFixed(2) : "" };
-      }
       if (e.key !== key) return e;
       const updated = { ...e, ...patch };
       if (patch.courseId !== undefined) { updated.levelId = ""; }
@@ -1364,7 +1355,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       isExistingMember: false,
       policyAgreed: false,
       membershipYear: templeYear(),
-      ...(!adminMode ? { memberType: "new" as const } : {}),
+      memberType: "new" as const,
     });
   }
 
@@ -1603,10 +1594,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
       if (!memberId || !token || !primaryMemberRole) {
         throw new Error("Select a Primary Member and confirm the member record on the previous screen.");
       }
-      await adminApi.members.patch(memberId, {
-        policyAgreed: true,
-        ...(adminMode && isExistingMember ? { membershipYear: templeYear() } : {}),
-      });
+      // Membership dates are changed only by renewal, never by registering a student.
+      await adminApi.members.patch(memberId, { policyAgreed: true });
 
       // Compute the membership fee decision for audit / record-keeping
       const membershipFeeDecision = !isExistingMember
@@ -1646,8 +1635,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
         enrollments:    validEnrollments.map(e => ({
           courseLevelId: Number(e.levelId),
           sectionId:     null,   // sections are assigned by administrators after registration
-          // Fees are set by the administrator; only an admin may override the amount.
-          ...(adminMode && e.amountDue ? { amountDue: e.amountDue } : {}),
           enrollDate:    templeToday(),
         })),
       });
@@ -2089,6 +2076,12 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           {memberChoiceError && <p className="mt-2 text-xs text-red-600" role="alert">{memberChoiceError}</p>}
           {registrationSettingsError && (
             <p className="mt-2 text-xs text-red-600" role="alert">{registrationSettingsError}</p>
+          )}
+          {/* Administrators may register outside the public registration window. */}
+          {registrationOpen === false && !registrationSettingsError && (
+            <p className="mt-2 text-xs text-amber-700" role="status">
+              Public registration is currently closed. As an administrator you can still register students.
+            </p>
           )}
         </div>}
 
@@ -2959,8 +2952,8 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   >
                     <option value="">— Select a course —</option>
                     {meta?.courses.filter(c => !takenCourseIds.has(c.id)).map(c => (
-                      // A course without an administrator-configured fee cannot be selected publicly.
-                      <option key={c.id} value={c.id} disabled={!adminMode && c.fee == null}>
+                      // A course without a fee set in Course Management cannot be selected.
+                      <option key={c.id} value={c.id} disabled={c.fee == null}>
                         {c.icon} {c.name} — {c.fee != null ? `$${c.fee.toFixed(2)}` : "fee not configured"}
                       </option>
                     ))}
@@ -2975,7 +2968,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                     <p className="mt-1 text-xs text-muted-foreground">
                       Course registration fee:{" "}
                       <span className="font-semibold text-secondary">
-                        {selectedCourse.fee != null ? `$${selectedCourse.fee.toFixed(2)}` : "not configured — enter the amount below"}
+                        {selectedCourse.fee != null ? `$${selectedCourse.fee.toFixed(2)}` : "not configured"}
                       </span>
                       <span className="ml-1.5">· Minimum age {minimumAgeForCourse(selectedCourse)} on the session start date</span>
                     </p>
@@ -3006,18 +2999,6 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
                   </Field>
                 )}
 
-                {adminMode && (
-                  <Field label="Registration Fee ($)">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={enr.amountDue}
-                      onChange={e => updateEnrollment(enr.key, { amountDue: e.target.value })}
-                      className={`${inputCls} max-w-[120px]`}
-                    />
-                  </Field>
-                )}
               </div>
             );
           })}
@@ -3043,7 +3024,7 @@ export function StudentRegistrationForm({ onSuccess, onBack, submitLabel = "Regi
           return {
             key: `course-${enr.key}`,
             label: course ? `${course.icon} ${course.name} (${courseTiming(course)})` : `Course ${idx + 1}`,
-            amount: adminMode ? (parseFloat(enr.amountDue) || 0) : (course?.fee ?? 0),
+            amount: course?.fee ?? 0,
           };
         });
         const membershipLines = membershipFeeYears.map(year => ({

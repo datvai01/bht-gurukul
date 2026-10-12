@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
-import { useAuth } from "./AuthContext";
+import { SESSION_EXPIRED_FLAG, useAuth } from "./AuthContext";
 import { getDefaultRoute } from "./rbac";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertCircle, Lock, User, BookOpen, Home, RefreshCw } from "lucide-react";
+import { AlertCircle, Lock, User, BookOpen, Home, RefreshCw, Mail, ArrowLeft } from "lucide-react";
 
 // ── Simple Math CAPTCHA ────────────────────────────────────────────────────────
 
@@ -33,12 +33,27 @@ function generateCaptcha() {
 
 export default function AdminLogin() {
   const [, setLocation] = useLocation();
-  const { login } = useAuth();
+  const { login, verifyCode } = useAuth();
 
   const [credential, setCredential] = useState("");
   const [secret,     setSecret]     = useState("");
   const [error,      setError]      = useState("");
   const [loading,    setLoading]    = useState(false);
+
+  // Step 2: the emailed sign-in code (admins only)
+  const [codeSentTo, setCodeSentTo] = useState<string | null>(null);
+  const [code,       setCode]       = useState("");
+  const [notice,     setNotice]     = useState("");
+
+  // Explain why the admin is back on this page after the two-hour session ended.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(SESSION_EXPIRED_FLAG)) {
+        sessionStorage.removeItem(SESSION_EXPIRED_FLAG);
+        setNotice("Your session ended after 2 hours. Please sign in again.");
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   // CAPTCHA state
   const [captcha,      setCaptcha]      = useState(generateCaptcha);
@@ -53,8 +68,17 @@ export default function AdminLogin() {
 
   // Refresh CAPTCHA after a failed login attempt
   useEffect(() => {
-    if (error) refreshCaptcha();
-  }, [error, refreshCaptcha]);
+    if (error && !codeSentTo) refreshCaptcha();
+  }, [error, codeSentTo, refreshCaptcha]);
+
+  function startOver() {
+    setCodeSentTo(null);
+    setCode("");
+    setSecret("");
+    setError("");
+    setNotice("");
+    refreshCaptcha();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -69,15 +93,54 @@ export default function AdminLogin() {
     }
 
     setLoading(true);
+    setNotice("");
     try {
-      const user = await login(credential.trim(), secret);
-      if (user) {
-        setLocation(getDefaultRoute(user.role));
+      const result = await login(credential.trim(), secret);
+      if (result.status === "signed-in") {
+        setLocation(getDefaultRoute(result.user.role));
       } else {
-        setError("Invalid credentials. Please try again.");
+        setCodeSentTo(result.maskedEmail);
+        setCode("");
       }
     } catch (err: any) {
       setError(err?.message ?? "Login failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      const user = await verifyCode(code);
+      setLocation(getDefaultRoute(user.role));
+    } catch (err: any) {
+      // An expired or locked code needs the password again.
+      if (err?.status === 429 || /sign in again/i.test(err?.message ?? "")) {
+        startOver();
+      }
+      setError(err?.message ?? "Verification failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resendCode() {
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      const result = await login(credential.trim(), secret);
+      if (result.status === "code-sent") {
+        setCodeSentTo(result.maskedEmail);
+        setCode("");
+        setNotice(`A new code was sent to ${result.maskedEmail}.`);
+      }
+    } catch (err: any) {
+      setError(err?.message ?? "Could not send a new code.");
     } finally {
       setLoading(false);
     }
@@ -104,7 +167,16 @@ export default function AdminLogin() {
           </div>
 
           <div className="p-8">
-            <h2 className="text-xl font-bold text-secondary mb-6 text-center">Sign in to continue</h2>
+            <h2 className="text-xl font-bold text-secondary mb-6 text-center">
+              {codeSentTo ? "Check your email" : "Sign in to continue"}
+            </h2>
+
+            {notice && (
+              <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 mb-6 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {notice}
+              </div>
+            )}
 
             {/* Error alert */}
             {error && (
@@ -114,6 +186,48 @@ export default function AdminLogin() {
               </div>
             )}
 
+            {codeSentTo ? (
+              <form onSubmit={handleVerify} className="space-y-5" data-testid="admin-code-form">
+                <p className="text-sm text-muted-foreground text-center">
+                  We emailed a 6-digit sign-in code to <span className="font-semibold text-secondary">{codeSentTo}</span>.
+                  It expires in 10 minutes.
+                </p>
+                <div className="space-y-2">
+                  <Label htmlFor="admin-code" className="text-secondary font-medium">Sign-in code</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      id="admin-code"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="6-digit code"
+                      className="pl-10 h-12 rounded-xl border-border focus:border-primary font-mono tracking-[0.3em]"
+                      value={code}
+                      onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <Button
+                  type="submit"
+                  className="w-full h-12 rounded-xl text-base font-semibold bg-gradient-to-r from-primary to-accent hover:opacity-90"
+                  disabled={loading || code.length !== 6}
+                >
+                  {loading ? "Verifying…" : "Verify and Sign In"}
+                </Button>
+                <div className="flex items-center justify-between text-sm">
+                  <button type="button" onClick={startOver} className="flex items-center gap-1 text-muted-foreground hover:text-primary">
+                    <ArrowLeft className="w-4 h-4" /> Start over
+                  </button>
+                  <button type="button" onClick={resendCode} disabled={loading} className="text-primary font-medium hover:underline disabled:opacity-50">
+                    Resend code
+                  </button>
+                </div>
+              </form>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-5">
 
               {/* Username / Phone */}
@@ -203,6 +317,7 @@ export default function AdminLogin() {
                 {loading ? "Signing in…" : "Sign In"}
               </Button>
             </form>
+            )}
 
             {/* Back to Home */}
             <button

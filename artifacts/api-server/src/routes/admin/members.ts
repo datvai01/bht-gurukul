@@ -1,19 +1,17 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { ReplitConnectors } from "@replit/connectors-sdk";
-import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { membersTable, studentsTable, membershipPaymentsTable, portalSettingsTable, memberAccessChallengesTable } from "@workspace/db/schema";
 import { or, eq, ilike, asc, desc, sql, and, count } from "drizzle-orm";
 import { writeAudit } from "../../lib/audit";
 import { logger } from "../../lib/logger";
+import { sendVerificationEmail } from "../../lib/verification-email";
 import { isCompleteAddress } from "../../lib/address";
 import { templeYear } from "../../lib/membership";
 import { pgErrorInfo } from "../../lib/pg-error";
 import { configuredFee, extendMembershipThrough } from "../../lib/registration-balance";
 import { isValidMemberNamePart, memberNameParts } from "../../lib/member-name";
 import {
-  createMemberContextToken,
   createNewMemberContextToken,
   createVerifiedMemberContextToken,
 } from "../../lib/member-context";
@@ -66,93 +64,8 @@ function emailVerificationTtlMs(): number {
     : ACCESS_CODE_TTL_MS;
 }
 
-type EmailSendResult = { ok: true } | { ok: false };
-
-async function sendEmailCode(email: string, code: string): Promise<EmailSendResult> {
-  const provider = process.env.MEMBER_EMAIL_PROVIDER?.trim().toLowerCase();
-  // Local development only: print the code to the API server log instead of emailing it.
-  if (provider === "console" && process.env.NODE_ENV !== "production") {
-    logger.warn({ email, code }, "DEV: member verification code (not emailed)");
-    return { ok: true };
-  }
-  if (provider === "gmail") {
-    const sender = normalizeMemberEmail(process.env.GMAIL_FROM_EMAIL);
-    if (!sender) return { ok: false };
-    const raw = Buffer.from([
-      `From: Gurukul Registration <${sender}>`,
-      `To: ${email}`,
-      "Subject: Your Gurukul verification code",
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      `Your verification code is ${code}. It expires soon. If you did not request it, ignore this email.`,
-    ].join("\r\n"), "utf8").toString("base64url");
-    try {
-      const response = await new ReplitConnectors().proxy(
-        "google-mail", "/gmail/v1/users/me/messages/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw }),
-        },
-      );
-      if (!response.ok) return { ok: false };
-      const result = await response.json() as { id?: unknown };
-      return typeof result?.id === "string" && result.id.length > 0
-        ? { ok: true } : { ok: false };
-    } catch {
-      return { ok: false };
-    }
-  }
-  if (provider && provider !== "smtp" && provider !== "resend") return { ok: false };
-  const host = process.env.SMTP_HOST?.trim();
-  const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS?.trim();
-  const from = process.env.SMTP_FROM?.trim();
-  if (provider !== "resend" && host && user && pass && from) {
-    try {
-      const port = Number(process.env.SMTP_PORT || 587);
-      const transport = nodemailer.createTransport({
-        host, port, secure: process.env.SMTP_SECURE === "true",
-        auth: { user, pass },
-      });
-      await transport.sendMail({
-        from, to: email, subject: "Your Gurukul verification code",
-        text: `Your verification code is ${code}. It expires soon. If you did not request it, ignore this email.`,
-      });
-      return { ok: true };
-    } catch {
-      return { ok: false };
-    }
-  }
-  if (provider === "smtp") return { ok: false };
-  const resendFrom = process.env.RESEND_FROM_EMAIL?.trim();
-  if (!resendFrom) return { ok: false };
-  try {
-    const response = await new ReplitConnectors().proxy("resend", "/emails", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: resendFrom,
-        to: [email],
-        subject: "Your Gurukul verification code",
-        text: `Your verification code is ${code}. It expires soon. If you did not request it, ignore this email.`,
-      }),
-    });
-    if (!response.ok) return { ok: false };
-    let result: unknown;
-    try {
-      result = await response.json();
-    } catch {
-      return { ok: false };
-    }
-    return result && typeof result === "object" &&
-      "id" in result && typeof (result as { id?: unknown }).id === "string" &&
-      Boolean((result as { id: string }).id.trim())
-      ? { ok: true }
-      : { ok: false };
-  } catch {
-    return { ok: false };
-  }
+async function sendEmailCode(email: string, code: string) {
+  return sendVerificationEmail(email, code, "member");
 }
 
 function identityChallengeKey(phone: string, email: string, mode: "existing" | "new", secret: string): string {
@@ -850,9 +763,8 @@ router.post("/lookup", async (req, res) => {
       membershipYear: member.membershipYear,
       createdAt: member.createdAt,
       validationStatus: member.validationStatus,
-      memberContextToken: verifiedAdmin
-        ? createMemberContextToken(member.id, sessionSecret)
-        : createVerifiedMemberContextToken(member.id, sessionSecret),
+      // An admin session or the parent's verified email both let this member be used for registration.
+      memberContextToken: createVerifiedMemberContextToken(member.id, sessionSecret),
       memFeeStatus: memPayment?.paymentStatus ?? null,
       memFeePaid:   memPayment ? parseFloat(memPayment.amountPaid) : 0,
       memFeeDue:    memPayment ? parseFloat(memPayment.amountDue)  : 0,
@@ -909,11 +821,14 @@ router.post("/", async (req, res) => {
 
     const created = await db.transaction(async tx => {
       await lockIdentity(tx, normalizedPhone, normalizedEmail);
-      const [existingPhone] = verifiedAdmin ? await tx.select({ id: membersTable.id })
+      // A member created during student registration (memberType "new", by a parent or an admin)
+      // needs a phone and email that are new to BHT. The admin Members screen checks the phone only.
+      const registrationMember = !verifiedAdmin || (req.body as { memberType?: unknown }).memberType === "new";
+      const [existingPhone] = registrationMember ? [] : await tx.select({ id: membersTable.id })
         .from(membersTable)
         .where(sql`REGEXP_REPLACE(COALESCE(${membersTable.phone}, ''), '[^0-9]', '', 'g') = ${normalizedPhone}`)
-        .limit(1) : [];
-      if (verifiedAdmin ? Boolean(existingPhone) : await hasIdentityCollision(tx, normalizedPhone, normalizedEmail)) {
+        .limit(1);
+      if (registrationMember ? await hasIdentityCollision(tx, normalizedPhone, normalizedEmail) : Boolean(existingPhone)) {
         throw Object.assign(new Error("identity_collision"), { code: "IDENTITY_COLLISION" });
       }
       const [row] = await tx.insert(membersTable)
@@ -954,7 +869,8 @@ router.post("/", async (req, res) => {
   } catch (err: unknown) {
     const pg = pgErrorInfo(err);
     if ((err as { code?: string })?.code === "IDENTITY_COLLISION") {
-      return res.status(409).json({ error: genericIdentityError });
+      // Admins get the specific reason; parents get a generic message that reveals nothing.
+      return res.status(409).json({ error: await getVerifiedAdmin(req) ? identityExistsError : genericIdentityError });
     }
     if (pg?.code === "23505") {
       return res.status(409).json({ error: genericIdentityError });

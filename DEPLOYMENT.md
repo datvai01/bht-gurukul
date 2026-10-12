@@ -19,6 +19,7 @@ The app runs as one Node.js process: the Express API also serves the built websi
 | `SESSION_SECRET` | A long random value (for example `openssl rand -hex 32`). Keep it secret; changing it signs everyone out. |
 | `PORT` | Set automatically by App Service. |
 | `SUPER_ADMIN_INITIAL_PASSWORD` | Initial super admin password (12+ characters). Used only when the account does not exist yet. |
+| `SUPER_ADMIN_VERIFICATION_EMAIL` | Inbox that receives the super admin's sign-in codes. Needed unless `admin@gurukul.org` is a mailbox you can read. |
 | `MEMBER_EMAIL_PROVIDER` | `smtp` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Mail server for verification codes (for example Azure Communication Services SMTP, or Gmail with an app password). |
 
@@ -53,7 +54,9 @@ SUPER_ADMIN_INITIAL_PASSWORD='…' pnpm --filter @workspace/scripts run bootstra
 
 ## 5. After the first deployment (administrator)
 
-1. Log in at `/admin` as `admin@gurukul.org` and change the password.
+1. Log in at `/admin` as `admin@gurukul.org` and change the password. Admin sign-in emails a
+   6-digit code, so SMTP and `SUPER_ADMIN_VERIFICATION_EMAIL` must work first. Every admin you add
+   needs a valid email address to sign in. Admin sessions last 2 hours.
 2. **Settings:** registration curriculum year, registration open/close dates, session start/end
    dates, annual membership fee, Bag & Supplies fee (defaults to $11.00), and Stripe keys for
    online payment.
