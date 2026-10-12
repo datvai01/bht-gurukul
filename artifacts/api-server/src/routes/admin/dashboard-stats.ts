@@ -7,9 +7,77 @@ import {
   studentsTable,
   portalSettingsTable,
 } from "@workspace/db/schema";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { getVerifiedAdmin } from "../../lib/admin-session";
 
 const router = Router();
+
+// Curriculum years are stored as "2027-2028" or "2027-28"; match either form.
+function yearAliases(value: string): string[] {
+  const m = value.trim().match(/^(\d{4})\s*[-/]\s*(\d{2}|\d{4})$/);
+  if (!m) return [value.trim()];
+  const start = Number(m[1]);
+  const end = m[2].length === 2 ? Math.floor(start / 100) * 100 + Number(m[2]) : Number(m[2]);
+  return Array.from(new Set([value.trim(), `${start}-${end}`, `${start}-${String(end).slice(-2)}`]));
+}
+
+function toLongYear(value: string): string {
+  return yearAliases(value)[1] ?? value.trim();
+}
+
+// GET /api/admin/dashboard/summary?year=2027-2028 — dashboard cards for one curriculum year
+router.get("/summary", async (req, res) => {
+  try {
+    if (!await getVerifiedAdmin(req)) {
+      return res.status(401).json({ error: "An active admin session is required." });
+    }
+    const settingRows = await db.select({ key: portalSettingsTable.key, value: portalSettingsTable.value })
+      .from(portalSettingsTable)
+      .where(inArray(portalSettingsTable.key, ["registration_curriculum_year", "registration_curriculum_years_list", "active_curriculum_years_list"]));
+    const setting = (key: string) => settingRows.find(row => row.key === key)?.value?.trim() ?? "";
+
+    // Years offered in the drop-down: configured lists plus any year that has registrations.
+    const registeredYears = await db.execute(sql`SELECT DISTINCT curriculum_year FROM student_registrations`);
+    const years = Array.from(new Set([
+      ...[setting("registration_curriculum_years_list"), setting("active_curriculum_years_list")]
+        .flatMap(list => list.split(",")).map(y => y.trim()).filter(Boolean),
+      ...(registeredYears.rows as { curriculum_year: string }[]).map(r => r.curriculum_year),
+      setting("registration_curriculum_year"),
+    ].filter(Boolean).map(toLongYear))).sort();
+
+    const year = typeof req.query.year === "string" && req.query.year.trim()
+      ? toLongYear(req.query.year)
+      : toLongYear(setting("registration_curriculum_year")) || years.at(-1) || "";
+    const aliases = year ? yearAliases(year) : [""];
+    const aliasList = sql.join(aliases.map(a => sql`${a}`), sql`, `);
+
+    const [counts] = (await db.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM enrollments e
+           JOIN student_registrations r ON r.id = e.registration_id
+          WHERE e.status = 'Enrolled' AND r.curriculum_year IN (${aliasList})) AS total_enrollments,
+        (SELECT COUNT(*)::int FROM teachers t
+          WHERE t.status = 'Active' AND t.curriculum_year IN (${aliasList})) AS active_teachers,
+        (SELECT COUNT(DISTINCT r.student_id)::int FROM student_registrations r
+          WHERE r.curriculum_year IN (${aliasList}) AND (
+            EXISTS (SELECT 1 FROM enrollments e JOIN payments p ON p.enrollment_id = e.id
+                     WHERE e.registration_id = r.id AND e.status = 'Enrolled' AND p.payment_status <> 'Paid')
+            OR EXISTS (SELECT 1 FROM student_fees f
+                        WHERE f.registration_id = r.id AND f.payment_status <> 'Paid'))) AS pending_payments
+    `)).rows as { total_enrollments: number; active_teachers: number; pending_payments: number }[];
+
+    return res.json({
+      year,
+      years,
+      totalEnrollments: Number(counts?.total_enrollments ?? 0),
+      activeTeachers: Number(counts?.active_teachers ?? 0),
+      pendingPayments: Number(counts?.pending_payments ?? 0),
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to build dashboard summary");
+    return res.status(500).json({ error: "Could not load the dashboard summary." });
+  }
+});
 
 // GET /api/admin/dashboard/stats
 router.get("/stats", async (_req, res) => {

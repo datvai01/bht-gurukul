@@ -1162,7 +1162,7 @@ export default function CourseManagement() {
               : "No courses for this year."}
           </div>
         ) : (
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+          <div className="flex flex-wrap gap-2" data-testid="course-tabs">
             {filteredCourses.map(c => {
               const sectionCount = c.levels.reduce((s, l) => s + l.sections.length, 0);
               const isSelected = selectedId === c.id;

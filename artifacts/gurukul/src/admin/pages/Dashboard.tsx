@@ -9,7 +9,7 @@ import { useAuth } from "../AuthContext";
 import { canAccess } from "../rbac";
 import type { UserRole } from "../rbac";
 import {
-  BookOpen, Users, GraduationCap, Megaphone, Calendar, Package,
+  Users, GraduationCap, Calendar, Package,
   AlertTriangle, CreditCard, ArrowRight, Inbox, ClipboardCheck,
   CheckCircle2, Bell, Plus, Loader2, X,
   TrendingUp, BarChart2, Trash2, UserCog, MessageSquare, Edit2,
@@ -98,6 +98,15 @@ export default function Dashboard() {
   const [attSummary,    setAttSummary]    = useState<AttendanceSummary[]>([]);
   const [dashStats,     setDashStats]     = useState<DashboardStats | null>(null);
   const [loading,       setLoading]       = useState(true);
+  // Dashboard cards are scoped to one curriculum year.
+  const [summaryYear, setSummaryYear] = useState("");
+  const [summary, setSummary] = useState<{ year: string; years: string[]; totalEnrollments: number; activeTeachers: number; pendingPayments: number } | null>(null);
+
+  useEffect(() => {
+    adminApi.dashboard.summary(summaryYear || undefined)
+      .then(data => { setSummary(data); if (!summaryYear) setSummaryYear(data.year); })
+      .catch(() => {});
+  }, [summaryYear]);
 
   const [quickAddOpen,       setQuickAddOpen]      = useState(false);
   const [quickAddTitle,      setQuickAddTitle]      = useState("");
@@ -139,12 +148,9 @@ export default function Dashboard() {
   const today   = new Date().toISOString().slice(0, 10);
   const userId  = user?.id;
 
-  const pendingPayments = students.filter((s) => s.paymentStatus !== "Paid").length;
   const overduePayments = students.filter((s) => s.paymentStatus === "Overdue").length;
   const lowStockItems   = inventory.filter((i) => i.currentStock <= i.reorderLevel).length;
   const unreadMessages  = inboxMessages.filter((m) => !m.isRead).length;
-  const activeCourses   = courses.length;
-  const totalEnrolled   = courses.reduce((a, c) => a + c.levels.reduce((b, l) => b + l.enrolled, 0), 0);
 
   const canSeeTasks = user?.isSuperAdmin || canAccess(user?.role as UserRole, "adminTasks");
   const taskAtLimit = tasks.length >= 10;
@@ -191,12 +197,9 @@ export default function Dashboard() {
   }));
 
   const stats = [
-    { label: "Active Courses",       value: activeCourses,                                                icon: BookOpen,      color: "bg-blue-500",   link: "/admin/courses" },
-    { label: "Total Enrollments",    value: totalEnrolled,                                                icon: GraduationCap, color: "bg-green-500",  link: "/admin/students" },
-    { label: "Active Teachers",      value: teachers.filter((t) => t.status === "Active").length,         icon: Users,         color: "bg-purple-500", link: "/admin/teachers" },
-    { label: "Pending Payments",     value: pendingPayments,                                              icon: CreditCard,    color: "bg-orange-500", link: "/admin/students" },
-    { label: "Active Announcements", value: announcements.filter((a) => a.isActive).length,              icon: Megaphone,     color: "bg-primary",    link: "/admin/announcements" },
-    { label: "Low Stock Alerts",     value: lowStockItems,                                                icon: Package,       color: "bg-red-500",    link: "/admin/inventory" },
+    { label: "Total Enrollments", value: summary?.totalEnrollments ?? 0, icon: GraduationCap, color: "bg-green-500",  link: "/admin/students" },
+    { label: "Active Teachers",   value: summary?.activeTeachers ?? 0,   icon: Users,         color: "bg-purple-500", link: "/admin/teachers" },
+    { label: "Pending Payments",  value: summary?.pendingPayments ?? 0,  icon: CreditCard,    color: "bg-orange-500", link: "/admin/students" },
   ];
 
   const quickLinks = [
@@ -352,9 +355,21 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Compact stat strip ──────────────────────────────────────────────── */}
-      <div className="overflow-x-auto pb-1 -mx-1 px-1">
-        <div className="flex gap-3 min-w-max">
+      {/* ── Compact stat strip (one curriculum year) ─────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="dashboard-year" className="text-sm font-semibold text-secondary">Curriculum Year</label>
+        <select
+          id="dashboard-year"
+          value={summaryYear}
+          onChange={e => setSummaryYear(e.target.value)}
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-primary"
+          data-testid="select-dashboard-year"
+        >
+          {(summary?.years ?? (summaryYear ? [summaryYear] : [])).map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
+      <div>
+        <div className="flex flex-wrap gap-3">
           {stats.map((stat) => (
             <Link
               key={stat.label}

@@ -358,6 +358,10 @@ export const adminApi = {
     },
   },
   dashboard: {
+    // Dashboard cards for one curriculum year (defaults to the registration year).
+    summary: (year?: string) => request<{
+      year: string; years: string[]; totalEnrollments: number; activeTeachers: number; pendingPayments: number;
+    }>("GET", `/dashboard/summary${year ? `?year=${encodeURIComponent(year)}` : ""}`),
     stats: () => request<{
       enrollmentTrend: { month: string; label: string; count: number }[];
       paymentMonthly:  { month: string; label: string; gurukul: number; membership: number }[];
